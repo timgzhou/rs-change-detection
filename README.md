@@ -13,6 +13,7 @@
 <sup>6 </sup>Barcelona School of Economics, <sup>7 </sup>Technical University of Munich, <sup>8 </sup>Stanford University, <sup>9 </sup>Linköping University 
 <br>
 <sup>10 </sup>German Aerospace Center (DLR), <sup>11 </sup>Texas A&amp;M University, <sup>12 </sup>Luxembourg Institute of Science and Technology
+<br>
 <sup>13 </sup>University of Twente, <sup>14 </sup>Nanyang Technological University, <sup>15 </sup>Indiana University Indianapolis
 <br>
 <sup>16 </sup>The University of British Columbia, <sup>17 </sup>University of Connecticut, <sup>18 </sup>Université Grenoble Alpes, 
