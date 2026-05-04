@@ -8,13 +8,14 @@
 
 <sup>†</sup>Equal contribution
 <br>
-<sup>1 </sup>RIKEN AIP, <sup>2 </sup>The University of Tokyo, <sup>3 </sup>Brown University, <sup>4 </sup>ETH Zurich, <sup>5 </sup>United Nations Satellite Centre, 
+<sup>1 </sup>RIKEN AIP, <sup>2 </sup>The University of Tokyo, <sup>3 </sup>Brown University, <sup>4 </sup>ETH Zurich, <sup>5 </sup>United Nations Satellite Centre
 <br>
-<sup>6 </sup>Barcelona School of Economics, <sup>7 </sup>Technical University of Munich, <sup>8 </sup>Stanford University, <sup>9 </sup>Linköping University, <sup>10 </sup>German Aerospace Center (DLR), 
+<sup>6 </sup>Barcelona School of Economics, <sup>7 </sup>Technical University of Munich, <sup>8 </sup>Stanford University, <sup>9 </sup>Linköping University 
 <br>
-<sup>11 </sup>Texas A&amp;M University, <sup>12 </sup>Luxembourg Institute of Science and Technology, <sup>13 </sup>University of Twente, <sup>14 </sup>Nanyang Technological University, 
+<sup>10 </sup>German Aerospace Center (DLR), <sup>11 </sup>Texas A&amp;M University, <sup>12 </sup>Luxembourg Institute of Science and Technology
+<sup>13 </sup>University of Twente, <sup>14 </sup>Nanyang Technological University, <sup>15 </sup>Indiana University Indianapolis
 <br>
-<sup>15 </sup>Indiana University Indianapolis, <sup>16 </sup>The University of British Columbia, <sup>17 </sup>University of Connecticut, <sup>18 </sup>Université Grenoble Alpes, 
+<sup>16 </sup>The University of British Columbia, <sup>17 </sup>University of Connecticut, <sup>18 </sup>Université Grenoble Alpes, 
 
 [**Overview**](#overview) | [**Installation**](#installation) | [**Dataset Preparation**](#dataset-preparation) | [**Pretrained Weights**](#pretrained-weights) | [**Quick Start**](#quick-start) | [**Repo Layout**](#repository-layout) 
 
