@@ -227,4 +227,4 @@ If this code repo contributes to your research, please kindly consider citing ou
 
 
 ## 🙋Q & A
-For any questions, please feel free to leave it in the issue section.
+For any questions, please feel free to leave it in the issue section or send inquiry email to qschrx@gmail.com.
