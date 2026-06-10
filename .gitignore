@@ -24,3 +24,7 @@ build
 #/tests
 
 *.zip
+lightning_logs
+pastis-test
+pretrained_weight
+wandb
