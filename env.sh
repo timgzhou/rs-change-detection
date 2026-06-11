@@ -5,4 +5,4 @@ source $SLURM_TMPDIR/env/bin/activate
 pip install --no-index --upgrade pip
 pip install --no-index -r requirements.txt
 pip install torchgeo==0.9
-pip install wandb==0.27
+pip install wandb

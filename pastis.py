@@ -34,7 +34,7 @@ class UpsampleTo224(Callback):
     def on_test_batch_start(self, trainer, pl_module, batch, batch_idx):
         self._resize(batch)
 
-epochs=2
+epochs=16
 
 # PASTISDataModule pads all sequences to padding_length (default 61) timesteps.
 # The model receives (B, T*C, H, W) = (B, 61*10, H, W) = (B, 610, H, W).
@@ -45,7 +45,7 @@ models_backbones={
     "dpt": "tu-vit_base_patch16_224",
     "segformer": "tu-mix_transformer_b2",
 }
-model_index=2
+model_index=0
 model_name=list(models_backbones.keys())[model_index]
 backbone=models_backbones[model_name]
 print(f"{model_name=} || {backbone=}")
