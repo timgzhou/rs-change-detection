@@ -5,8 +5,66 @@ from lightning.pytorch.callbacks import Callback
 from torchgeo.datamodules import PASTISDataModule
 import torch
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
 from kornia.enhance import normalize
 
+
+epochs=2
+batch_size=64
+num_workers=4
+models_backbones={
+    "unet": "resnet50",
+    "deeplabv3+": "resnet50",
+    "dpt": "tu-vit_base_patch16_224",
+    "segformer": "tu-mix_transformer_b2",
+}
+model_index=0
+from typing import Literal, cast
+model_name = cast(Literal['unet', 'deeplabv3+', 'fcn', 'upernet', 'segformer', 'dpt'], list(models_backbones.keys())[model_index])
+backbone=models_backbones[model_name]
+print(f"{model_name=} || {backbone=} || {num_workers=} || {batch_size=}")
+
+import os
+_data_src = 'data'
+if tmpdir := os.environ.get('SLURM_TMPDIR'):
+    _data_dst = os.path.join(tmpdir, 'data')
+    if not os.path.exists(os.path.join(_data_dst, 'PASTIS-R', 'metadata.geojson')):
+        import time, zipfile, shutil
+        os.makedirs(_data_dst, exist_ok=True)
+        _zip_src = os.path.join(_data_src, 'PASTIS-R.zip')
+        _zip_dst = os.path.join(tmpdir, 'PASTIS-R.zip')
+        print(f"Copying zip to {tmpdir}...")
+        _t0 = time.time()
+        shutil.copy2(_zip_src, _zip_dst)
+        print(f"Copy done in {time.time()-_t0:.1f}s. Extracting...")
+        _t0 = time.time()
+        with zipfile.ZipFile(_zip_dst) as zf:
+            zf.extractall(_data_dst)
+        os.remove(_zip_dst)
+        print(f"Extract done in {time.time()-_t0:.1f}s.")
+    else: print(f"data already exists at {os.path.join(_data_dst, 'PASTIS-R')}")
+    _data_src = _data_dst
+    
+datamodule = PASTISDataModule(
+    root=_data_src,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    bands='s2',
+    mode='semantic',
+)
+
+########## DEBUG ###########
+# import time
+# datamodule.setup('fit')
+# loader = datamodule.train_dataloader()
+# t0 = time.time()
+# for batch in loader:
+#     pass
+# print(f"Dataloader only: {time.time()-t0:.1f}s")
+# raise SystemExit
+############################
 
 class UpsampleTo224(Callback):
     def _resize(self, batch):
@@ -28,34 +86,12 @@ class UpsampleTo224(Callback):
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         self._resize(batch)
 
-    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx):
+    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
         self._resize(batch)
 
-    def on_test_batch_start(self, trainer, pl_module, batch, batch_idx):
+    def on_test_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
         self._resize(batch)
 
-epochs=16
-
-# PASTISDataModule pads all sequences to padding_length (default 61) timesteps.
-# The model receives (B, T*C, H, W) = (B, 61*10, H, W) = (B, 610, H, W).
-
-models_backbones={
-    "unet": "resnet50",
-    "deeplabv3+": "resnet50",
-    "dpt": "tu-vit_base_patch16_224",
-    "segformer": "tu-mix_transformer_b2",
-}
-model_index=0
-model_name=list(models_backbones.keys())[model_index]
-backbone=models_backbones[model_name]
-print(f"{model_name=} || {backbone=}")
-datamodule = PASTISDataModule(
-    root='data',
-    batch_size=64,
-    num_workers=4,
-    bands='s2',
-    mode='semantic',
-)
 
 task = SemanticSegmentationTask(
     model=model_name,
@@ -78,14 +114,11 @@ task = SemanticSegmentationTask(
 )
 
 wandb_logger = WandbLogger(project="pastis-test", log_model=False, name=f"{model_name}_{backbone}")
-callbacks = [UpsampleTo224()] if model_name in ('dpt', 'segformer') else []
+callbacks: list[Callback] = [UpsampleTo224()] if model_name in ('dpt', 'segformer') else []
 trainer = L.Trainer(max_epochs=epochs, accelerator='gpu', devices=1, logger=wandb_logger, callbacks=callbacks)
+
 trainer.fit(task, datamodule=datamodule)
 trainer.test(task, datamodule=datamodule)
-
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
 
 CLASSES = [
     'background', 'meadow', 'soft_winter_wheat', 'corn', 'winter_barley',

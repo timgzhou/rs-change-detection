@@ -2,7 +2,7 @@ torch
 torchvision
 xformers
 huggingface_hub
-torchgeo==0.9
+torchgeo
 lightning
 wandb
 triton

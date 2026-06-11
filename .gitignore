@@ -28,10 +28,5 @@ lightning_logs
 pastis-test
 pretrained_weight
 wandb
-bin
-lib
-lib64
-include
-share
-pyvenv.cfg
+env/
 *.png
