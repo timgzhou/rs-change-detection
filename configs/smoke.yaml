@@ -1,0 +1,6 @@
+# Quick smoke test: tiny model, 2 epochs. For verifying the pipeline end-to-end.
+model_size: tiny
+input_modalities: [sentinel2_l2a, sentinel1]
+use_anyup: true
+epochs: 2
+lr: 1.0e-3

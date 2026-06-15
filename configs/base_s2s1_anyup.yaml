@@ -1,0 +1,6 @@
+# OlmoEarth-v1-Base, S2+S1, AnyUp pixel head, full run. Default config.
+model_size: base
+input_modalities: [sentinel2_l2a, sentinel1]
+use_anyup: true
+epochs: 64
+lr: 3.0e-4
