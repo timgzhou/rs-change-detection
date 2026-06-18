@@ -56,6 +56,20 @@ OUT_DIR = "pastis_visualize"
 IGNORE_INDEX = -1  # OlmoEarth maps PASTIS void (19) -> -1
 
 CKPT_GLOB = "checkpoints/*_best.pt"  # discovered at runtime; head inferred from name
+RESULTS_CSV = "oe_pastis.csv"        # appended each run with test-set metrics per checkpoint
+CSV_FIELDS = ["timestamp", "checkpoint", "head", "model_size",
+              "test_miou", "test_overall_acc", "test_macro_acc", "test_macro_f1"]
+
+
+def _append_csv(row: dict) -> None:
+    """Append one result row to RESULTS_CSV, writing the header if the file is new."""
+    import csv
+    new = not os.path.exists(RESULTS_CSV)
+    with open(RESULTS_CSV, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
 
 # PASTIS class names + colormap (same 20-class scheme as pastis.py).
 CLASSES = [
@@ -126,34 +140,36 @@ def load_rgb(split, idx=0):
     return (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-6)
 
 
-def _build_head(use_anyup, encoder, patch_size, task_config, device):
-    if use_anyup:
-        return FT.AnyUpHead(encoder, patch_size, task_config.num_classes,
-                            task_config.task_type, POOLING_TYPE).to(device)
-    return BackboneWithHead(
-        model=encoder, task_type=task_config.task_type, patch_size=patch_size,
-        pooling_type=POOLING_TYPE, num_classes=task_config.num_classes, use_pooled_tokens=False,
-    ).to(device)
+def _build_head(head, encoder, patch_size, task_config, device):
+    return FT.build_head(head, encoder, patch_size, task_config).to(device)
 
 
-def _first_sample_batch(split, use_anyup):
+def _first_sample_batch(split, head):
     """First sample (index 0) of `split`, in the batch form the head's forward expects."""
     ds = PASTISRDataset(path_to_splits=Path(DATA_SPLITS), split=split, partition="default",
                         norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES)
     masked, label = eval_collate_fn([ds[0]])
-    if use_anyup:
-        rgb = FT._load_rgb_guidance(split, 0).unsqueeze(0)  # (1,3,64,64), ImageNet-normed
-        return (masked, label, rgb)
-    return (masked, label)
+    if not head.startswith("anyup"):
+        return (masked, label)
+    temporal = head in ("anyup_t1", "anyup_t2")
+    rgb = FT._load_rgb_guidance(split, 0, temporal=temporal).unsqueeze(0)  # (1,3,64,64) or (1,T,3,64,64)
+    return (masked, label, rgb)
 
 
 def _infer_run(ckpt_path):
-    """Infer (use_anyup, model_size) from a run-name checkpoint like
-    oe_pastis_base_s2s1_anyup_lr3e-4_ep64_best.pt. Falls back to (anyup-by-name, base)."""
+    """Infer (head, model_size) from a run-name checkpoint, e.g.
+    oe_pastis_base_s2s1_anyup_t2_lr3e-4_ep32_best.pt -> ("anyup_t2","base")."""
     name = os.path.basename(ckpt_path)
-    use_anyup = "_anyup_" in name
     size = next((s for s in ("nano", "tiny", "base", "large") if f"_{s}_" in name), "base")
-    return use_anyup, size
+    if "_anyup_t1_" in name:
+        head = "anyup_t1"
+    elif "_anyup_t2_" in name:
+        head = "anyup_t2"
+    elif "_anyup_" in name:
+        head = "anyup"
+    else:
+        head = "lp"
+    return head, size
 
 
 def main():
@@ -174,7 +190,7 @@ def main():
     # Cache encoders by model size (different checkpoints may use different sizes).
     encoders: dict[str, nn.Module] = {}
     for ckpt in available:
-        use_anyup, size = _infer_run(ckpt)
+        head, size = _infer_run(ckpt)
         tag = os.path.basename(ckpt).replace("_best.pt", "")
         if size not in encoders:
             m = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[size]), load_weights=True)
@@ -182,24 +198,41 @@ def main():
         encoder = encoders[size]
         patch_size = getattr(encoder, "patch_size", None) or 8
 
-        FT.USE_ANYUP = use_anyup  # _forward_logits branches on this module global
-        ft = _build_head(use_anyup, encoder, patch_size, task_config, device)
+        FT.HEAD = head  # FT.make_loader / _forward_logits branch on this module global
+        ft = _build_head(head, encoder, patch_size, task_config, device)
         # Lazy-init the head, then load finetuned weights.
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-            FT._forward_logits(ft, _first_sample_batch("train", use_anyup), device, task_config, patch_size)
+            FT._forward_logits(ft, _first_sample_batch("train", head), device, task_config, patch_size)
         ft.load_state_dict(torch.load(ckpt, map_location=device))
         ft.eval()
 
+        # --- visualize first train + test sample ---
         for split in ["train", "test"]:
-            batch = _first_sample_batch(split, use_anyup)
+            batch = _first_sample_batch(split, head)
             with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                 logits, label = FT._forward_logits(ft, batch, device, task_config, patch_size)
             pred = logits.argmax(dim=1)[0].cpu().numpy()
             mask = label[0].cpu().numpy()
             rgb = load_rgb(split, idx=0)
             grid_hw = (64 // patch_size, 64 // patch_size)  # encoder token grid (8x8)
-            out = os.path.join(OUT_DIR, f"{tag}_pred_{split}_{ts}.png")
+            out = os.path.join(OUT_DIR, f"{tag}_pred_{split}.png")
             visualize(rgb, pred, mask, out, grid_hw=grid_hw)
+
+        # --- evaluate on the full test set + log to CSV ---
+        test_loader = FT.make_loader("test", shuffle=False)  # reads FT.HEAD set above
+        res = FT._evaluate(ft, test_loader, device, task_config, patch_size)
+        m = res.metrics
+        print(f"  {tag}: test miou={m['miou']:.4f} acc={m['overall_acc']:.4f}")
+        _append_csv({
+            "timestamp": ts,
+            "checkpoint": os.path.basename(ckpt),
+            "head": head,
+            "model_size": size,
+            "test_miou": round(m["miou"], 6),
+            "test_overall_acc": round(m["overall_acc"], 6),
+            "test_macro_acc": round(m["macro_acc"], 6),
+            "test_macro_f1": round(m["macro_f1"], 6),
+        })
 
 
 if __name__ == "__main__":

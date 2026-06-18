@@ -1,6 +1,0 @@
-# OlmoEarth-v1-Base, S2+S1, patch linear-probe head, full run.
-model_size: base
-input_modalities: [sentinel2_l2a, sentinel1]
-use_anyup: false
-epochs: 64
-lr: 1.0e-3

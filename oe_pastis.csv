@@ -1,0 +1,4 @@
+timestamp,checkpoint,head,model_size,test_miou,test_overall_acc,test_macro_acc,test_macro_f1
+06151619,oe_pastis_base_s2s1_anyup_lr0.001_ep64_best.pt,anyup,base,0.589277,0.81063,0.703824,0.72669
+06151619,oe_pastis_tiny_s2_lp_lr0.001_ep32_best.pt,lp,tiny,0.527125,0.79341,0.659704,0.672781
+06151619,olmoearth_pastis_best.pt,lp,base,0.595757,0.823883,0.712082,0.730916

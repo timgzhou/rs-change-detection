@@ -1,6 +1,0 @@
-# OlmoEarth-v1-Tiny, S2 only, patch linear-probe head. Fast config for iteration.
-model_size: tiny
-input_modalities: [sentinel2_l2a]
-use_anyup: false
-epochs: 32
-lr: 1.0e-3

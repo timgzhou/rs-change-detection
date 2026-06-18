@@ -1,0 +1,42 @@
+# Experiment commands (single source of truth).
+#
+# Config model:
+#   - configs/defaults.yaml      : OlmoEarth tuning defaults (epochs, lr, batch_size, ...)
+#   - configs/utae_defaults.yaml : UTAE tuning defaults
+#   - Architecture fields are REQUIRED via --set (no defaults) so you can't accidentally
+#     launch the wrong model. Tuning knobs default from the *_defaults.yaml; override any
+#     with --set key=value.
+#
+# Run interactively:  python -u <script> --set <fields...>
+# Run as batch job:   sbatch <script>.sh --set <fields...>   (forwards all args; emails start/done)
+#
+# OlmoEarth required fields: model_size, modalities, head_mode, freeze_backbone
+#   model_size : nano | tiny | base | large
+#   modalities : sentinel2_l2a | sentinel1 | sentinel2_l2a,sentinel1
+#   head_mode  : lp | anyup | anyup_t2 | anyup_t1
+#   freeze_backbone : true | false
+# UTAE required fields: modalities (S2|S1A|S1D, comma-joined), fusion (early|late, if multimodal)
+
+# ============================ OlmoEarth (finetune_olmoearth_pastis) ============================
+# --- fine-tuned (freeze-then-unfreeze warmup) ---
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=lp       freeze_backbone=false
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup    freeze_backbone=false
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t2 freeze_backbone=false
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=false
+
+# --- frozen backbone + frozen AnyUp, only head/probe trains ---
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=lp       freeze_backbone=true
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup    freeze_backbone=true
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t2 freeze_backbone=true
+sbatch finetune_olmoearth_pastis.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=true
+
+# --- quick smoke (tiny, 2 epochs) ---
+python -u finetune_olmoearth_pastis.py --set model_size=tiny modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t2 freeze_backbone=false epochs=2 batch_size=4
+
+# ============================ UTAE (utae_pastis) ============================
+sbatch utae_pastis.sh --set modalities=S2
+sbatch utae_pastis.sh --set modalities=S1A
+sbatch utae_pastis.sh --set modalities=S2,S1A fusion=early
+sbatch utae_pastis.sh --set modalities=S2,S1A fusion=late
+# smoke:
+python -u utae_pastis.py --set modalities=S2 epochs=2

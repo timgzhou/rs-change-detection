@@ -33,3 +33,4 @@ env/
 env_olmo/
 *.png
 logs/
+.out

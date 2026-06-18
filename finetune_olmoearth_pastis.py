@@ -75,10 +75,20 @@ NUM_WORKERS = 0     # 0 avoids DataLoader-worker fork crashing on the h5py/HDF5 
                     # PASTIS reads small .pt files so this isn't a bottleneck.
 LR = 1e-3
 SEED = 0
-# Head: False -> patch linear probe (BackboneWithHead); True -> AnyUp pixel head.
-USE_ANYUP = False
+# Head mode drives everything: "lp" | "anyup" | "anyup_t2" | "anyup_t1".
+# anyup_t2 = shared time-pooled features, per-timestep RGB guidance, mean-pool outputs.
+# anyup_t1 = per-timestep features AND per-timestep guidance, mean-pool outputs.
 HEAD = "lp"
+FREEZE_BACKBONE = False   # if True, encoder stays frozen all epochs (only head trains)
 CKPT_PATH = "checkpoints/olmoearth_pastis_lp_best.pt"
+
+
+def _is_anyup(head=None):
+    return (head or HEAD).startswith("anyup")
+
+
+def _is_temporal_anyup(head=None):
+    return (head or HEAD) in ("anyup_t1", "anyup_t2")
 
 
 def _apply_config(cfg: Config) -> None:
@@ -94,8 +104,8 @@ def _apply_config(cfg: Config) -> None:
     g["NUM_WORKERS"] = cfg.num_workers
     g["LR"] = cfg.lr
     g["SEED"] = cfg.seed
-    g["USE_ANYUP"] = cfg.use_anyup
     g["HEAD"] = cfg.head
+    g["FREEZE_BACKBONE"] = cfg.freeze_backbone
     g["CKPT_PATH"] = cfg.ckpt_path
 
 # ImageNet normalization for AnyUp's RGB guidance image.
@@ -103,38 +113,51 @@ _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
 
-def _load_rgb_guidance(split: str, idx: int) -> torch.Tensor:
-    """Raw S2 -> time-averaged RGB (B04/B03/B02 = idx 3/2/1 in the 13-band L1C stack),
-    scaled to [0,1] then ImageNet-normalized. Returns (3, 64, 64)."""
-    s2 = torch.load(Path(DATA_SPLITS) / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt")
-    rgb = s2.float().mean(0)[[3, 2, 1]]               # (3, 64, 64)
-    rgb = (rgb - rgb.amin()) / (rgb.amax() - rgb.amin() + 1e-6)
-    rgb = (rgb - _IMAGENET_MEAN[0]) / _IMAGENET_STD[0]
-    return rgb
+def _norm_rgb(rgb: torch.Tensor) -> torch.Tensor:
+    """(...,3,H,W) raw -> [0,1] (per-image min/max) -> ImageNet-normalized, as AnyUp expects."""
+    flat = rgb.reshape(*rgb.shape[:-3], 3, -1)
+    lo = flat.amin(-1).reshape(*rgb.shape[:-3], 3, 1, 1)
+    hi = flat.amax(-1).reshape(*rgb.shape[:-3], 3, 1, 1)
+    rgb = (rgb - lo) / (hi - lo + 1e-6)
+    # (3,1,1) so it broadcasts to both (3,H,W) and (...,3,H,W) without adding a dim.
+    return (rgb - _IMAGENET_MEAN.view(3, 1, 1)) / _IMAGENET_STD.view(3, 1, 1)
+
+
+def _load_rgb_guidance(split: str, idx: int, temporal: bool = False) -> torch.Tensor:
+    """Raw S2 -> RGB (B04/B03/B02 = idx 3/2/1 in the 13-band L1C stack), normalized.
+    temporal=False -> time-averaged (3,64,64); temporal=True -> per-timestep (T,3,64,64)."""
+    s2 = torch.load(Path(DATA_SPLITS) / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt").float()
+    if temporal:
+        rgb = s2[:, [3, 2, 1]]                # (T,3,64,64)
+    else:
+        rgb = s2.mean(0)[[3, 2, 1]]           # (3,64,64)
+    return _norm_rgb(rgb)
 
 
 class _GuidancePASTIS(torch.utils.data.Dataset):
-    """Wraps PASTISRDataset to also yield the RGB guidance image AnyUp needs."""
+    """Wraps PASTISRDataset to also yield AnyUp's RGB guidance. temporal=True yields a
+    per-timestep guidance stack (T,3,64,64); else a single time-averaged (3,64,64)."""
 
-    def __init__(self, split: str):
+    def __init__(self, split: str, temporal: bool):
         self.ds = PASTISRDataset(
             path_to_splits=Path(DATA_SPLITS), split=split, partition="default",
             norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES,
         )
         self.split = split
+        self.temporal = temporal
 
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, i):
         masked, label = self.ds[i]
-        return masked, label, _load_rgb_guidance(self.split, i)
+        return masked, label, _load_rgb_guidance(self.split, i, self.temporal)
 
 
 def _guidance_collate(batch):
     samples = [(m, l) for m, l, _ in batch]
     masked, label = eval_collate_fn(samples)
-    rgb = torch.stack([r for _, _, r in batch])
+    rgb = torch.stack([r for _, _, r in batch])   # (B,3,64,64) or (B,T,3,64,64)
     return masked, label, rgb
 
 
@@ -185,10 +208,76 @@ class AnyUpHead(nn.Module):
         return self.probe(hr), label
 
 
+class AnyUpHeadT2(AnyUpHead):
+    """Shared time-pooled features (B,8,8,D), but AnyUp is run once per timestep using
+    that month's RGB guidance; the T upsampled feature maps are mean-pooled, then probed.
+    rgb is (B,T,3,64,64). ~T x the AnyUp cost of the plain head."""
+
+    def forward(self, masked, label, rgb, is_train: bool = True):
+        dev = next(self.wrapper.parameters()).device
+        emb, label = self.wrapper(masked, label, is_train=is_train)
+        feats = cast(torch.Tensor, emb).permute(0, 3, 1, 2).contiguous().float()  # (B,D,8,8)
+        if not self._inited:
+            self._init_probe(feats.shape[1], dev)
+        rgb = rgb.float().to(dev)                                    # (B,T,3,64,64)
+        T = rgb.shape[1]
+        hr = sum(self.anyup(rgb[:, t], feats, output_size=label.shape[-2:])
+                 for t in range(T)) / T                              # mean over time
+        return self.probe(hr), label
+
+
+class AnyUpHeadT1(AnyUpHead):
+    """Per-timestep features AND per-timestep guidance: for each t, pool only that
+    timestep's tokens -> (B,8,8,D), AnyUp with that month's RGB, mean-pool over T, probe.
+    rgb is (B,T,3,64,64). Heaviest variant (per-t feature pooling + per-t AnyUp)."""
+
+    def _pool_timestep(self, tam, t):
+        """Pool only timestep t of the tokens -> (B,8,8,D), reusing the wrapper's own
+        spatial/bandset/modality reduction (time-mean over a single step is a no-op)."""
+        repl = {}
+        for m in tam.modalities:
+            mn = tam.get_masked_modality_name(m)
+            repl[m] = getattr(tam, m)[:, :, :, t:t + 1]
+            repl[mn] = getattr(tam, mn)[:, :, :, t:t + 1]
+        return tam._replace(**repl).pool_unmasked_tokens(POOLING_TYPE, spatial_pooling=True)
+
+    def forward(self, masked, label, rgb, is_train: bool = True):
+        dev = next(self.encoder.parameters()).device
+        label = label.to(dev)
+        # raw tokens (B,8,8,T,BandSets,D), before any temporal pooling
+        tam = self.encoder(masked, patch_size=self.wrapper.patch_size,
+                           fast_pass=True)["tokens_and_masks"]
+        rgb = rgb.float().to(dev)                                    # (B,T,3,64,64)
+        T = rgb.shape[1]
+        acc = None
+        for t in range(T):
+            feats = self._pool_timestep(tam, t).permute(0, 3, 1, 2).contiguous().float()
+            if not self._inited:
+                self._init_probe(feats.shape[1], dev)
+            hr_t = self.anyup(rgb[:, t], feats, output_size=label.shape[-2:])
+            acc = hr_t if acc is None else acc + hr_t
+        return self.probe(acc / T), label
+
+
+def build_head(head: str, encoder, patch_size, task_config):
+    """Construct the segmentation head for the given mode."""
+    if head == "lp":
+        return BackboneWithHead(
+            model=encoder, task_type=task_config.task_type, patch_size=patch_size,
+            pooling_type=POOLING_TYPE, num_classes=task_config.num_classes,
+            use_pooled_tokens=False,
+        )
+    cls = {"anyup": AnyUpHead, "anyup_t2": AnyUpHeadT2, "anyup_t1": AnyUpHeadT1}[head]
+    return cls(encoder, patch_size, task_config.num_classes,
+               task_config.task_type, POOLING_TYPE)
+
+
 def make_loader(split: str, shuffle: bool) -> DataLoader:
-    if USE_ANYUP:
-        return DataLoader(_GuidancePASTIS(split), batch_size=BATCH_SIZE,
-                          num_workers=NUM_WORKERS, shuffle=shuffle, collate_fn=_guidance_collate)
+    if _is_anyup():
+        # temporal heads need per-timestep guidance (T,3,64,64); plain anyup a single (3,64,64)
+        return DataLoader(_GuidancePASTIS(split, temporal=_is_temporal_anyup()),
+                          batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
+                          shuffle=shuffle, collate_fn=_guidance_collate)
     ds = PASTISRDataset(
         path_to_splits=Path(DATA_SPLITS),
         split=split,
@@ -210,7 +299,7 @@ def _forward_logits(ft, batch, device, task_config, patch_size):
 
     LP batch is (masked, label); AnyUp batch is (masked, label, rgb).
     """
-    if USE_ANYUP:
+    if _is_anyup():
         masked, label, rgb = batch
         label = label.to(device)
         logits, label = ft(to_device(masked, device), label, rgb, is_train=ft.training)
@@ -263,30 +352,23 @@ def main(cfg: Config) -> None:
     patch_size = getattr(encoder, "patch_size", None) or 8
     print(f"Using patch_size={patch_size}, pooling={POOLING_TYPE}, num_classes={task_config.num_classes}")
 
-    print(f"Head: {HEAD} ({'AnyUp pixel' if USE_ANYUP else 'patch linear probe'})")
-    if USE_ANYUP:
-        ft = AnyUpHead(encoder, patch_size, task_config.num_classes,
-                       task_config.task_type, POOLING_TYPE).to(device)
-    else:
-        ft = BackboneWithHead(
-            model=encoder,
-            task_type=task_config.task_type,
-            patch_size=patch_size,
-            pooling_type=POOLING_TYPE,
-            num_classes=task_config.num_classes,
-            use_pooled_tokens=False,
-        ).to(device)
+    print(f"Head: {HEAD}")
+    ft = build_head(HEAD, encoder, patch_size, task_config).to(device)
 
     # Dry pass to lazy-init the head (probe in_dim depends on model embedding size).
     with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         _forward_logits(ft, next(iter(train_loader)), device, task_config, patch_size)
 
-    # Freeze-then-unfreeze warmup (verbatim policy from run_finetune_eval).
-    freeze_epochs = math.ceil(FREEZE_EPOCH_FRACTION * EPOCHS) if EPOCHS > 0 else 0
+    # Freeze schedule. FREEZE_BACKBONE=True -> encoder stays frozen for ALL epochs
+    # (linear-probe-on-frozen-features). Otherwise the freeze-then-unfreeze warmup.
+    if FREEZE_BACKBONE:
+        freeze_epochs = EPOCHS + 1   # unfreeze condition (epoch >= freeze_epochs) never fires
+    else:
+        freeze_epochs = math.ceil(FREEZE_EPOCH_FRACTION * EPOCHS) if EPOCHS > 0 else 0
     backbone_unfrozen = freeze_epochs == 0
     if not backbone_unfrozen:
         set_backbone_trainable(ft.backbone, False)
-        print(f"Backbone frozen for first {freeze_epochs} epoch(s).")
+        print(f"Backbone frozen for {'ALL' if FREEZE_BACKBONE else f'first {freeze_epochs}'} epoch(s).")
 
     current_lr = LR
     opt = torch.optim.AdamW(ft.parameters(), lr=current_lr)
@@ -341,7 +423,10 @@ def main(cfg: Config) -> None:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Finetune OlmoEarth on PASTIS.")
-    parser.add_argument("--config", default="configs/base_s2s1_anyup.yaml",
-                        help="Path to a YAML run config (see config.py / configs/).")
+    parser.add_argument("--config", default=None,
+                        help="Optional YAML overriding configs/defaults.yaml.")
+    parser.add_argument("--set", nargs="*", default=[], metavar="key=value",
+                        help="Override config fields, e.g. --set model_size=base "
+                             "modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=true")
     args = parser.parse_args()
-    main(load_config(args.config))
+    main(load_config(args.config, getattr(args, "set")))
