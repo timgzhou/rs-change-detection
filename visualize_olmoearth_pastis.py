@@ -12,6 +12,7 @@ Run in the OlmoEarth venv:
     python -u visualize_olmoearth_pastis.py
 """
 import os
+import re
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "olmo_shims"))
 import olmo_bootstrap  # type: ignore[import-not-found]
@@ -169,7 +170,10 @@ def _infer_run(ckpt_path):
         head = "anyup"
     else:
         head = "lp"
-    return head, size
+    # patch size encoded as _p<N>_ in run_name; default 4 for older names without it.
+    m = re.search(r"_p(\d+)_", name)
+    patch_size = int(m.group(1)) if m else 4
+    return head, size, patch_size
 
 
 def main():
@@ -190,13 +194,12 @@ def main():
     # Cache encoders by model size (different checkpoints may use different sizes).
     encoders: dict[str, nn.Module] = {}
     for ckpt in available:
-        head, size = _infer_run(ckpt)
+        head, size, patch_size = _infer_run(ckpt)
         tag = os.path.basename(ckpt).replace("_best.pt", "")
         if size not in encoders:
             m = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[size]), load_weights=True)
             encoders[size] = cast(nn.Module, m.encoder if hasattr(m, "encoder") else m)
         encoder = encoders[size]
-        patch_size = getattr(encoder, "patch_size", None) or 8
 
         FT.HEAD = head  # FT.make_loader / _forward_logits branch on this module global
         ft = _build_head(head, encoder, patch_size, task_config, device)

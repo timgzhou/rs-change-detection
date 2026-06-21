@@ -49,6 +49,9 @@ class Config:
     freeze_backbone: Optional[bool] = None
 
     # --- tuning knobs (defaults come from configs/defaults.yaml) ---
+    # patch_size: token grid = 64/patch_size per side. OlmoEarth's LP eval uses 4
+    # (16x16 grid); we previously hardcoded 8 (8x8), which lowered mIoU. Default 4.
+    patch_size: int = 4
     epochs: int = 64
     lr: float = 1e-3
     batch_size: int = 32
@@ -90,7 +93,7 @@ class Config:
         )
         frz = "_frozen" if self.freeze_backbone else ""
         return (f"oe_{self.dataset}_{self.model_size}_{mods}_{self.head}{frz}"
-                f"_lr{self.lr:g}_ep{self.epochs}")
+                f"_p{self.patch_size}_lr{self.lr:g}_ep{self.epochs}")
 
     @property
     def ckpt_path(self) -> str:

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=oe_pastis_ft
 #SBATCH --account=aip-gpleiss
-#SBATCH --time=6:00:00
+#SBATCH --time=9:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G

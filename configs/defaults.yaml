@@ -1,7 +1,7 @@
 # OlmoEarth finetune TUNING defaults (non-architecture). Architecture fields
 # (model_size, modalities, head_mode, freeze_backbone) are REQUIRED via --set / --config
 # and intentionally have NO default here, so a run can't silently pick the wrong model.
-epochs: 32
+epochs: 64
 lr: 3.0e-4
 batch_size: 8
 num_workers: 0

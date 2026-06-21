@@ -80,6 +80,7 @@ SEED = 0
 # anyup_t1 = per-timestep features AND per-timestep guidance, mean-pool outputs.
 HEAD = "lp"
 FREEZE_BACKBONE = False   # if True, encoder stays frozen all epochs (only head trains)
+PATCH_SIZE = 4            # token grid = 64/PATCH_SIZE per side (OlmoEarth LP eval uses 4)
 CKPT_PATH = "checkpoints/olmoearth_pastis_lp_best.pt"
 
 
@@ -106,6 +107,7 @@ def _apply_config(cfg: Config) -> None:
     g["SEED"] = cfg.seed
     g["HEAD"] = cfg.head
     g["FREEZE_BACKBONE"] = cfg.freeze_backbone
+    g["PATCH_SIZE"] = cfg.patch_size
     g["CKPT_PATH"] = cfg.ckpt_path
 
 # ImageNet normalization for AnyUp's RGB guidance image.
@@ -347,9 +349,9 @@ def main(cfg: Config) -> None:
     # BackboneWithHead/get_eval_wrapper want the ENCODER (a FlexiVitBase), not the
     # full LatentMIM (matches evaluator_callback, which passes model.encoder).
     encoder = cast(nn.Module, model.encoder if hasattr(model, "encoder") else model)
-    # encoder.patch_size is None for OlmoEarth; fall back to 8 (the value used in the
-    # OlmoEarth README/eval for S2 @10m). 64x64 tiles / 8 -> 8x8 token grid.
-    patch_size = getattr(encoder, "patch_size", None) or 8
+    # patch_size comes from config (default 4, OlmoEarth's LP eval protocol); encoder's
+    # own patch_size is None (FlexiViT takes it per-call).
+    patch_size = PATCH_SIZE
     print(f"Using patch_size={patch_size}, pooling={POOLING_TYPE}, num_classes={task_config.num_classes}")
 
     print(f"Head: {HEAD}")
