@@ -163,12 +163,57 @@ def _guidance_collate(batch):
     return masked, label, rgb
 
 
-class AnyUpHead(nn.Module):
-    """OlmoEarth encoder -> (B,8,8,D) feature map -> AnyUp upsample to (B,D,64,64)
-    using an RGB guidance image -> 1x1 conv (D -> num_classes). Returns (B,C,64,64).
+class AnyUpUpsampleProbe(nn.Module):
+    """The encoder-independent half of every AnyUp head: a FROZEN AnyUp upsampler plus a
+    lazily-sized 1x1 probe. Given per-timestep feature map(s) and RGB guidance, it runs
+    AnyUp (once or per-timestep), mean-pools the upsampled maps over time, and probes.
 
-    AnyUp is the pretrained multi-backbone model, kept frozen (we rely on RGB bands).
-    The probe (1x1 conv) is lazily sized on the first forward (D depends on model size).
+    Shared by the live AnyUp heads (which get features from the OlmoEarth encoder) and the
+    cached-feature heads (which read (T,gH,gW,D) from disk) so the AnyUp+probe path is one
+    source of truth. AnyUp is the pretrained multi-backbone model, kept frozen (we rely on
+    its RGB guidance). The probe's in_dim (= D) is only known at first forward.
+    """
+
+    def __init__(self, num_classes: int) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.anyup = cast(nn.Module, torch.hub.load(
+            "wimmerth/anyup", "anyup_multi_backbone", use_natten=False, pretrained=True))
+        for p in self.anyup.parameters():       # frozen guidance upsampler
+            p.requires_grad = False
+        self.probe = nn.Conv2d(1, 1, 1)         # placeholder; real in_dim on first forward
+        self._inited = False
+
+    def _init_probe(self, dim: int, device: torch.device) -> None:
+        self.probe = nn.Conv2d(dim, self.num_classes, kernel_size=1).to(device)
+        self._inited = True
+
+    def forward(self, feats_per_t, rgb, out_size):
+        """feats_per_t: either a single (B,D,gH,gW) tensor reused for every timestep, or a
+        list/tuple of T such tensors (one per timestep). rgb: (B,3,H,W) reused for all t,
+        or (B,T,3,H,W) per-timestep. AnyUp runs in fp32. Returns (B, num_classes, *out_size).
+        """
+        per_t_feats = isinstance(feats_per_t, (list, tuple))
+        per_t_rgb = rgb.dim() == 5
+        T = (len(feats_per_t) if per_t_feats
+             else rgb.shape[1] if per_t_rgb else 1)
+        acc = None
+        for t in range(T):
+            f = (feats_per_t[t] if per_t_feats else feats_per_t).float()
+            g = (rgb[:, t] if per_t_rgb else rgb).float()
+            if not self._inited:
+                self._init_probe(f.shape[1], f.device)
+            hr_t = self.anyup(g, f, output_size=out_size)           # (B,D,*out_size)
+            acc = hr_t if acc is None else acc + hr_t
+        return self.probe(acc / T)
+
+
+class AnyUpHead(nn.Module):
+    """OlmoEarth encoder -> (B,gH,gW,D) feature map -> AnyUp upsample to (B,D,64,64) using
+    an RGB guidance image -> 1x1 conv (D -> num_classes). Returns (B,C,64,64).
+
+    The AnyUp+probe half lives in AnyUpUpsampleProbe; this class only supplies the encoder
+    features (single, time-pooled) and a single mean RGB guidance.
     """
 
     def __init__(self, encoder: nn.Module, patch_size: int, num_classes: int,
@@ -181,84 +226,62 @@ class AnyUpHead(nn.Module):
             encoder, task_type=task_type, patch_size=patch_size,
             pooling_type=pooling_type, concat_features=False, use_pooled_tokens=False,
         )
-        self.num_classes = num_classes
-        self.anyup = cast(nn.Module, torch.hub.load(
-            "wimmerth/anyup", "anyup_multi_backbone", use_natten=False, pretrained=True))
-        for p in self.anyup.parameters():       # frozen guidance upsampler
-            p.requires_grad = False
-        self.probe = nn.Conv2d(1, 1, 1)         # placeholder; real in_dim on first forward
-        self._inited = False
+        self.up = AnyUpUpsampleProbe(num_classes)
 
     @property
     def backbone(self) -> nn.Module:
         return self.encoder  # the OlmoEarth encoder (for freeze/unfreeze)
 
-    def _init_probe(self, dim: int, device: torch.device) -> None:
-        self.probe = nn.Conv2d(dim, self.num_classes, kernel_size=1).to(device)
-        self._inited = True
-
     def forward(self, masked, label, rgb, is_train: bool = True):
         dev = next(self.wrapper.parameters()).device
-        emb, label = self.wrapper(masked, label, is_train=is_train)  # (B,8,8,D)
-        emb = cast(torch.Tensor, emb)
-        feats = emb.permute(0, 3, 1, 2).contiguous()                # (B,D,8,8)
-        if not self._inited:
-            self._init_probe(feats.shape[1], dev)
-        # AnyUp runs in fp32; guidance + features upsampled to label resolution.
-        hr = self.anyup(rgb.float().to(dev), feats.float(),
-                        output_size=label.shape[-2:])               # (B,D,64,64)
-        return self.probe(hr), label
+        emb, label = self.wrapper(masked, label, is_train=is_train)  # (B,gH,gW,D)
+        feats = cast(torch.Tensor, emb).permute(0, 3, 1, 2).contiguous()  # (B,D,gH,gW)
+        logits = self.up(feats, rgb.to(dev), out_size=label.shape[-2:])
+        return logits, label
 
 
 class AnyUpHeadT2(AnyUpHead):
-    """Shared time-pooled features (B,8,8,D), but AnyUp is run once per timestep using
+    """Shared time-pooled features (B,gH,gW,D), but AnyUp is run once per timestep using
     that month's RGB guidance; the T upsampled feature maps are mean-pooled, then probed.
     rgb is (B,T,3,64,64). ~T x the AnyUp cost of the plain head."""
 
     def forward(self, masked, label, rgb, is_train: bool = True):
         dev = next(self.wrapper.parameters()).device
         emb, label = self.wrapper(masked, label, is_train=is_train)
-        feats = cast(torch.Tensor, emb).permute(0, 3, 1, 2).contiguous().float()  # (B,D,8,8)
-        if not self._inited:
-            self._init_probe(feats.shape[1], dev)
-        rgb = rgb.float().to(dev)                                    # (B,T,3,64,64)
-        T = rgb.shape[1]
-        hr = sum(self.anyup(rgb[:, t], feats, output_size=label.shape[-2:])
-                 for t in range(T)) / T                              # mean over time
-        return self.probe(hr), label
+        feats = cast(torch.Tensor, emb).permute(0, 3, 1, 2).contiguous()  # (B,D,gH,gW)
+        logits = self.up(feats, rgb.to(dev), out_size=label.shape[-2:])    # per-t rgb
+        return logits, label
 
 
 class AnyUpHeadT1(AnyUpHead):
     """Per-timestep features AND per-timestep guidance: for each t, pool only that
-    timestep's tokens -> (B,8,8,D), AnyUp with that month's RGB, mean-pool over T, probe.
+    timestep's tokens -> (B,gH,gW,D), AnyUp with that month's RGB, mean-pool over T, probe.
     rgb is (B,T,3,64,64). Heaviest variant (per-t feature pooling + per-t AnyUp)."""
-
-    def _pool_timestep(self, tam, t):
-        """Pool only timestep t of the tokens -> (B,8,8,D), reusing the wrapper's own
-        spatial/bandset/modality reduction (time-mean over a single step is a no-op)."""
-        repl = {}
-        for m in tam.modalities:
-            mn = tam.get_masked_modality_name(m)
-            repl[m] = getattr(tam, m)[:, :, :, t:t + 1]
-            repl[mn] = getattr(tam, mn)[:, :, :, t:t + 1]
-        return tam._replace(**repl).pool_unmasked_tokens(POOLING_TYPE, spatial_pooling=True)
 
     def forward(self, masked, label, rgb, is_train: bool = True):
         dev = next(self.encoder.parameters()).device
         label = label.to(dev)
-        # raw tokens (B,8,8,T,BandSets,D), before any temporal pooling
+        # raw tokens (B,gH,gW,T,BandSets,D), before any temporal pooling
         tam = self.encoder(masked, patch_size=self.wrapper.patch_size,
                            fast_pass=True)["tokens_and_masks"]
-        rgb = rgb.float().to(dev)                                    # (B,T,3,64,64)
         T = rgb.shape[1]
-        acc = None
-        for t in range(T):
-            feats = self._pool_timestep(tam, t).permute(0, 3, 1, 2).contiguous().float()
-            if not self._inited:
-                self._init_probe(feats.shape[1], dev)
-            hr_t = self.anyup(rgb[:, t], feats, output_size=label.shape[-2:])
-            acc = hr_t if acc is None else acc + hr_t
-        return self.probe(acc / T), label
+        feats_per_t = [pool_per_timestep(tam, t, POOLING_TYPE).permute(0, 3, 1, 2).contiguous()
+                       for t in range(T)]
+        logits = self.up(feats_per_t, rgb.to(dev), out_size=label.shape[-2:])
+        return logits, label
+
+
+def pool_per_timestep(tam, t, pooling_type):
+    """Pool only timestep t of a TokensAndMasks -> (B, gH, gW, D), reusing the model's
+    own spatial/bandset/modality reduction (a time-mean over a single sliced step is a
+    no-op). Shared by AnyUpHeadT1 and the offline feature extractor so both produce
+    identical per-timestep features."""
+    repl = {}
+    for m in tam.modalities:
+        mn = tam.get_masked_modality_name(m)
+        repl[m] = getattr(tam, m)[:, :, :, t:t + 1]
+        repl[mn] = getattr(tam, mn)[:, :, :, t:t + 1]
+    return tam._replace(**repl).pool_unmasked_tokens(pooling_type, spatial_pooling=True)
 
 
 def build_head(head: str, encoder, patch_size, task_config):
