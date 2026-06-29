@@ -179,13 +179,13 @@ def main() -> None:
     p.add_argument("--patch_size", type=int, default=4)
     p.add_argument("--tile_size", type=int, default=IMAGE_SIZE,
                    help=f"spatial sub-tile size (<= {IMAGE_SIZE}); {IMAGE_SIZE} = no tiling (exact)")
-    p.add_argument("--modalities", default="sentinel2_l2a,sentinel1",
+    p.add_argument("--modalities", default="sentinel2_l2a", # sentinel1
                    help="comma-separated; subset of " + ",".join(ALLOWED_MODALITIES))
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--out_root", default="features")
     p.add_argument("--splits", default=",".join(SPLITS),
                    help="comma-separated subset of train,valid,test")
-    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--num_workers", type=int, default=4)
     args = p.parse_args()
 

@@ -305,7 +305,7 @@ def main() -> None:
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--head_mode", default="lp_pa2px",
                    choices=list(HEAD_GUIDANCE))
-    p.add_argument("--epochs", type=int, default=16)
+    p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=4,
@@ -358,6 +358,18 @@ def main() -> None:
     test_loader = loader("test", False)
 
     head = build_cached_head(args.head_mode, embed_dim, NUM_CLASSES, patch_size).to(device)
+
+    # AnyUp heads lazily create their real probe (Conv2d(embed_dim, C)) on the FIRST forward
+    # (AnyUpUpsampleProbe starts with a 1x1x1 placeholder). Run a no-grad dry pass now so the
+    # real probe exists before AdamW captures head.parameters() -- otherwise the only trainable
+    # module is never optimized and the AnyUp heads don't learn. Mirrors the live finetune path
+    # (finetune_olmoearth_pastis.py dry pass before the optimizer). LP heads build their probe
+    # in __init__, so this pass is a harmless no-op for them.
+    with torch.no_grad():
+        feats0, _label0, rgb0 = next(iter(train_loader))
+        _run_head(head, feats0, rgb0, device)
+    head = head.to(device)  # re-move in case _init_probe created the probe on a fresh device
+
     opt = torch.optim.AdamW(head.parameters(), lr=args.lr)
     scheduler = ReduceLROnPlateau(opt, mode="max", factor=SCHEDULER_FACTOR,
                                   patience=SCHEDULER_PATIENCE, min_lr=SCHEDULER_MIN_LR,
