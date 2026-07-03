@@ -1,0 +1,5 @@
+timestamp,features,head_mode,epochs,lr,batch_size,seed,test_miou,test_overall_acc,avg_epoch_sec
+2026-06-29T16:37:13,oe_base_s2_ps4_tile64,lp_pa2pa_bu,32,0.001,32,0,0.47,0.79,26.87
+2026-06-29T16:52:12,oe_base_s2_ps4_tile64,lp_pa2px,32,0.001,32,0,0.46,0.79,26.28
+2026-06-29T17:14:41,oe_base_s2_ps4_tile64,anyup,32,0.001,4,0,0.50,0.80,35.82
+2026-06-29T18:17:25,oe_base_s2_ps2_tile32,lp_pa2pa_bu,32,0.001,32,0,0.49,0.80,215.42

@@ -26,7 +26,10 @@ import olmo_bootstrap  # type: ignore[import-not-found]
 olmo_bootstrap.apply()
 
 import argparse
+import csv
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -34,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from tqdm import tqdm
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from olmoearth_pretrain.evals.metrics import segmentation_metrics
@@ -44,12 +47,8 @@ from olmoearth_pretrain.evals.metrics import segmentation_metrics
 # an AnyUpUpsampleProbe is actually constructed (i.e. only for the anyup heads).
 from finetune_olmoearth_pastis import AnyUpUpsampleProbe, _load_rgb_guidance
 
-# Scheduler knobs: same values as olmoearth_pretrain.evals.finetune.constants, inlined so
-# this script stays decoupled from the finetune training path.
-SCHEDULER_FACTOR = 0.2
-SCHEDULER_PATIENCE = 2
+# Cosine annealing decays the LR from args.lr to SCHEDULER_MIN_LR over args.epochs.
 SCHEDULER_MIN_LR = 1e-6
-SCHEDULER_COOLDOWN = 0
 
 NUM_CLASSES = 20            # PASTIS: 20 classes (class 19 = void -> ignore via -1 labels)
 IGNORE_LABEL = -1
@@ -63,6 +62,19 @@ HEAD_GUIDANCE = {
     "anyup": "mean",
     "anyup_t2": "temporal",
     "anyup_t1": "temporal",
+}
+
+# Whether the head collapses time via feats.mean(dim=1) as its first op. When True the dataset
+# pre-reduces the cached (T,gH,gW,D) to (1,gH,gW,D) ONCE at preload, so we don't float-cast and
+# ship the full T=12 tensor across PCIe every step only for the head to average it away (a 12x
+# cut in RAM + host->device traffic; the head's mean over a singleton T is then a no-op). Only
+# anyup_t1 needs the per-timestep features, so it opts out.
+HEAD_REDUCES_TIME = {
+    "lp_pa2pa_bu": True,
+    "lp_pa2px": True,
+    "anyup": True,
+    "anyup_t2": True,
+    "anyup_t1": False,
 }
 
 
@@ -80,11 +92,16 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
     DATA_SPLITS global -- main() points it at args.data_splits before loaders are built."""
 
     def __init__(self, features_dir: Path, data_splits: Path, split: str,
-                 guidance: str = "none", max_ram_gb: float = 32.0):
+                 guidance: str = "none", max_ram_gb: float = 32.0,
+                 reduce_time: bool = False):
         self.feat_dir = features_dir / f"pastis_r_{split}"
         self.labels = torch.load(data_splits / f"pastis_r_{split}" / "targets.pt")
         self.split = split
         self.guidance = guidance
+        # If the head mean-pools over time, collapse (T,gH,gW,D)->(1,gH,gW,D) once here so we
+        # never float-cast / ship the full T tensor per step. Keeps a singleton T so heads that
+        # do feats.mean(dim=1) / feats.shape[1] stay correct unchanged.
+        self.reduce_time = reduce_time
         self.n = len(list(self.feat_dir.glob("*.pt")))
         if self.n != len(self.labels):
             raise ValueError(
@@ -113,8 +130,10 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         if self.n == 0:
             return
         probe = torch.load(self.feat_dir / "0.pt")                 # (T, gH, gW, D), fp16 on disk
-        feat_elems = probe.numel()
         T = probe.shape[0]
+        # Shape actually stored per sample: (1,gH,gW,D) when the head averages over time.
+        feat_shape = (1, *probe.shape[1:]) if self.reduce_time else tuple(probe.shape)
+        feat_elems = int(torch.tensor(feat_shape).prod())
         self._rgb_elems = (T * 3 * 64 * 64) if self.guidance == "temporal" else (3 * 64 * 64)
         est = self._est_gb(feat_elems)
         if est > max_ram_gb:
@@ -123,13 +142,16 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
                   f"({self.n} files/epoch); raise --max_ram_gb or --num_workers to speed up.")
             return
         print(f"[{self.split}] preloading {self.n} samples (~{est:.1f} GB fp16) into RAM "
-              f"once; epochs will run at compute speed...")
+              f"once{' [time-reduced]' if self.reduce_time else ''}; "
+              f"epochs will run at compute speed...")
         # Keep features in fp16 to halve RAM; cast to float per-batch in __getitem__.
-        self._feats = torch.empty((self.n, *probe.shape), dtype=torch.float16)
+        self._feats = torch.empty((self.n, *feat_shape), dtype=torch.float16)
         rgb_buf = (torch.empty((self.n, *self._rgb_shape(T)), dtype=torch.float16)
                    if self.guidance != "none" else None)
         for i in tqdm(range(self.n), desc=f"preload {self.split}", leave=False):
-            self._feats[i] = torch.load(self.feat_dir / f"{i}.pt")
+            feat = torch.load(self.feat_dir / f"{i}.pt")           # (T,gH,gW,D) fp16
+            # Mean over T in fp32 for accuracy, then store fp16; keep a singleton T dim.
+            self._feats[i] = feat.float().mean(dim=0, keepdim=True).half() if self.reduce_time else feat
             if rgb_buf is not None:
                 rgb_buf[i] = _load_rgb_guidance(
                     self.split, i, temporal=self.guidance == "temporal").half()
@@ -153,6 +175,8 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
             return feat, label, rgb
         # disk fallback
         feat = torch.load(self.feat_dir / f"{idx}.pt").float()    # (T, gH, gW, D)
+        if self.reduce_time:
+            feat = feat.mean(dim=0, keepdim=True)                 # (1, gH, gW, D)
         if self.guidance == "none":
             rgb = torch.empty(0)
         else:
@@ -297,6 +321,24 @@ def evaluate(head, loader, device):
                                 num_classes=NUM_CLASSES, ignore_label=IGNORE_LABEL)
 
 
+RESULT_COLUMNS = [
+    "timestamp", "features", "head_mode", "epochs", "lr", "batch_size", "seed",
+    "test_miou", "test_overall_acc", "avg_epoch_sec",
+]
+
+
+def append_result(csv_path: Path, row: dict) -> None:
+    """Append one run's args + test metrics to csv_path, writing the header if the file is
+    new. Fixed RESULT_COLUMNS so concurrent jobs (one per head/feature set) all share one
+    schema."""
+    new_file = not csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
+        if new_file:
+            w.writeheader()
+        w.writerow(row)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="LP on cached OlmoEarth features.")
     p.add_argument("--features", required=True,
@@ -305,8 +347,8 @@ def main() -> None:
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--head_mode", default="lp_pa2px",
                    choices=list(HEAD_GUIDANCE))
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--epochs", type=int, default=32)
+    p.add_argument("--lr", type=float, default=1e-2)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=4,
                    help="DataLoader workers for the DISK-FALLBACK path; ignored when a split "
@@ -316,9 +358,18 @@ def main() -> None:
                    help="per-split RAM budget for preloading features into memory; splits "
                         "estimated above this fall back to per-sample disk loading.")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--results_csv", default="lp_olmoearth_pastis.csv",
+                   help="append run args + test metrics to this CSV (created with a header "
+                        "if absent).")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
+    # AnyUp runs its (attention-heavy) upsample in fp32; TF32 lets the L40s tensor cores do
+    # those matmuls ~2x faster at negligible precision cost. Frozen AnyUp + tiny probe means
+    # the slight TF32 rounding is immaterial to results. Big win for the anyup* heads, which
+    # call AnyUp T times per sample.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     feat_dir = Path(args.out_root) / args.features
     data_splits = Path(args.data_splits)
@@ -339,9 +390,11 @@ def main() -> None:
         import finetune_olmoearth_pastis as fmod
         fmod.DATA_SPLITS = args.data_splits
 
+    reduce_time = HEAD_REDUCES_TIME[args.head_mode]
+
     def loader(split, shuffle):
         ds = CachedFeatureDataset(feat_dir, data_splits, split, guidance=guidance,
-                                  max_ram_gb=args.max_ram_gb)
+                                  max_ram_gb=args.max_ram_gb, reduce_time=reduce_time)
         preloaded = ds._feats is not None
         # Preloaded: index RAM in-process (workers would duplicate the tensor). Disk fallback:
         # use workers + pin_memory + persistent_workers to overlap reads with GPU compute.
@@ -371,15 +424,15 @@ def main() -> None:
     head = head.to(device)  # re-move in case _init_probe created the probe on a fresh device
 
     opt = torch.optim.AdamW(head.parameters(), lr=args.lr)
-    scheduler = ReduceLROnPlateau(opt, mode="max", factor=SCHEDULER_FACTOR,
-                                  patience=SCHEDULER_PATIENCE, min_lr=SCHEDULER_MIN_LR,
-                                  cooldown=SCHEDULER_COOLDOWN)
+    scheduler = CosineAnnealingLR(opt, T_max=args.epochs, eta_min=SCHEDULER_MIN_LR)
     loss_fn = nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
 
     best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
     best_val_miou = float("-inf")
 
+    epoch_times = []   # wall time (train + val) per epoch, for the average below
     for epoch in range(args.epochs):
+        epoch_start = time.perf_counter()
         head.train()
         last_loss = float("nan")
         pbar = tqdm(train_loader, desc=f"epoch {epoch+1}/{args.epochs}", leave=False)
@@ -393,17 +446,36 @@ def main() -> None:
             pbar.set_postfix(loss=f"{last_loss:.4f}")
 
         val = evaluate(head, val_loader, device)
-        scheduler.step(val.primary)
+        scheduler.step()
+        epoch_times.append(time.perf_counter() - epoch_start)
         print(f"epoch {epoch+1}/{args.epochs} | train_loss {last_loss:.4f} | "
-              f"val miou {val.primary:.4f} | {val.metrics}")
+              f"val miou {val.primary:.4f} | {epoch_times[-1]:.1f}s | {val.metrics}")
         if val.primary > best_val_miou:
             best_val_miou = val.primary
             best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
 
+    avg_epoch_time = sum(epoch_times) / len(epoch_times) if epoch_times else float("nan")
     head.load_state_dict(best_state)
     test = evaluate(head, test_loader, device)
     print(f"\nBEST val miou {best_val_miou:.4f}")
     print(f"TEST {test.metrics}")
+    print(f"Avg epoch time: {avg_epoch_time:.1f}s over {len(epoch_times)} epochs")
+
+    # Keep the CSV readable: ints/strings as-is, metrics+time as 2-decimal floats. lr is the
+    # one value .2f would mangle (1e-3 -> 0.00), so log it with %g (compact, full precision).
+    append_result(Path(args.results_csv), {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "features": args.features,
+        "head_mode": args.head_mode,
+        "epochs": int(args.epochs),
+        "lr": f"{args.lr:g}",
+        "batch_size": int(args.batch_size),
+        "seed": int(args.seed),
+        "test_miou": f"{test.metrics['miou']:.2f}",
+        "test_overall_acc": f"{test.metrics['overall_acc']:.2f}",
+        "avg_epoch_sec": f"{avg_epoch_time:.2f}",
+    })
+    print(f"Appended result to {args.results_csv}")
 
 
 if __name__ == "__main__":

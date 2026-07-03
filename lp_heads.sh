@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=oe_lp
 #SBATCH --account=aip-gpleiss
-#SBATCH --time=9:00:00
+#SBATCH --time=12:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
@@ -38,7 +38,7 @@ fi
 # Configurable knobs (env vars override these defaults).
 BATCH_SIZE="${BATCH_SIZE:-32}"
 ANYUP_BATCH_SIZE="${ANYUP_BATCH_SIZE:-4}"
-NUM_WORKERS="${NUM_WORKERS:-0}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
 MAX_RAM_GB="${MAX_RAM_GB:-32}"
 
 cd "$SLURM_SUBMIT_DIR"

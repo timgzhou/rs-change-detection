@@ -17,6 +17,7 @@ if [ ${#FEATURES[@]} -eq 0 ]; then
         oe_base_s2_ps1_tile1
         oe_base_s2_ps1_tile8
         oe_base_s2_ps2_tile32
+        oe_base_s2_ps4_tile64
         oe_base_s2s1_ps4_tile64
     )
 fi
@@ -32,3 +33,5 @@ for feat in "${FEATURES[@]}"; do
     echo "submitting lp_heads.sh for $feat"
     sbatch "${DEP_ARG[@]}" --export=ALL,FEATURES="$feat" lp_heads.sh
 done
+
+# bash submit_lp_heads.sh

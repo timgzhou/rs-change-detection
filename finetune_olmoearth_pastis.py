@@ -197,9 +197,13 @@ class AnyUpUpsampleProbe(nn.Module):
         per_t_rgb = rgb.dim() == 5
         T = (len(feats_per_t) if per_t_feats
              else rgb.shape[1] if per_t_rgb else 1)
+        # Cast the shared feature map ONCE (t2/anyup reuse a single feats across all T, so
+        # re-.float()ing it each iteration is pure waste). Per-t feature lists (t1) still
+        # cast inside the loop since each timestep is a distinct tensor.
+        shared_f = None if per_t_feats else feats_per_t.float()
         acc = None
         for t in range(T):
-            f = (feats_per_t[t] if per_t_feats else feats_per_t).float()
+            f = feats_per_t[t].float() if per_t_feats else shared_f
             g = (rgb[:, t] if per_t_rgb else rgb).float()
             if not self._inited:
                 self._init_probe(f.shape[1], f.device)
