@@ -44,7 +44,7 @@ MAX_RAM_GB="${MAX_RAM_GB:-32}"
 cd "$SLURM_SUBMIT_DIR"
 source env_olmo.sh
 
-HEADS=(lp_pa2pa_bu lp_pa2px anyup anyup_t1 anyup_t2)
+HEADS=(lp_pa2pa_bu lp_pa2px anyup anyup_t2 anyup_t2_ens anyup_t1 anyup_t1_ens)
 
 LOG="logs/oe_lp_${SLURM_JOB_ID}.out"
 

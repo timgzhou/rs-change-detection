@@ -14,11 +14,13 @@
 FEATURES=("$@")
 if [ ${#FEATURES[@]} -eq 0 ]; then
     FEATURES=(
-        oe_base_s2_ps1_tile1
-        oe_base_s2_ps1_tile8
-        oe_base_s2_ps2_tile32
-        oe_base_s2_ps4_tile64
-        oe_base_s2s1_ps4_tile64
+        # oe_base_s2_ps1_tile1
+        # oe_base_s2_ps1_tile8
+        # oe_base_s2_ps2_tile32
+        # oe_base_s2_ps4_tile64
+        # oe_base_s2s1_ps4_tile64
+        oe_base_s2_ps2_tile8
+        oe_base_s2_ps4_tile8
     )
 fi
 

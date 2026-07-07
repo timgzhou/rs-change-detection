@@ -174,18 +174,29 @@ class AnyUpUpsampleProbe(nn.Module):
     its RGB guidance). The probe's in_dim (= D) is only known at first forward.
     """
 
-    def __init__(self, num_classes: int) -> None:
+    def __init__(self, num_classes: int, ensemble: bool = False) -> None:
         super().__init__()
         self.num_classes = num_classes
+        # ensemble=False: mean-pool the T upsampled feature maps, then one shared probe (the
+        # original behaviour). ensemble=True: give EACH timestep its own probe and mean the T
+        # per-timestep LOGITS (pre-softmax logit averaging) -- a genuine temporal ensemble that
+        # is NOT algebraically equal to mean-then-probe because the probes differ per timestep.
+        self.ensemble = ensemble
         self.anyup = cast(nn.Module, torch.hub.load(
             "wimmerth/anyup", "anyup_multi_backbone", use_natten=False, pretrained=True))
         for p in self.anyup.parameters():       # frozen guidance upsampler
             p.requires_grad = False
-        self.probe = nn.Conv2d(1, 1, 1)         # placeholder; real in_dim on first forward
+        self.probe = nn.Conv2d(1, 1, 1)         # placeholder; real in_dim (+ T) on first forward
         self._inited = False
 
-    def _init_probe(self, dim: int, device: torch.device) -> None:
-        self.probe = nn.Conv2d(dim, self.num_classes, kernel_size=1).to(device)
+    def _init_probe(self, dim: int, device: torch.device, n_probes: int = 1) -> None:
+        # n_probes: 1 shared probe (default) or T independent probes for the ensemble variant.
+        if self.ensemble:
+            self.probe = nn.ModuleList(
+                [nn.Conv2d(dim, self.num_classes, kernel_size=1) for _ in range(n_probes)]
+            ).to(device)
+        else:
+            self.probe = nn.Conv2d(dim, self.num_classes, kernel_size=1).to(device)
         self._inited = True
 
     def forward(self, feats_per_t, rgb, out_size):
@@ -201,15 +212,25 @@ class AnyUpUpsampleProbe(nn.Module):
         # re-.float()ing it each iteration is pure waste). Per-t feature lists (t1) still
         # cast inside the loop since each timestep is a distinct tensor.
         shared_f = None if per_t_feats else feats_per_t.float()
+        if not self._inited:
+            probe_dim = (feats_per_t[0] if per_t_feats else feats_per_t).shape[1]
+            probe_dev = (feats_per_t[0] if per_t_feats else feats_per_t).device
+            self._init_probe(probe_dim, probe_dev, n_probes=T)
         acc = None
         for t in range(T):
             f = feats_per_t[t].float() if per_t_feats else shared_f
             g = (rgb[:, t] if per_t_rgb else rgb).float()
-            if not self._inited:
-                self._init_probe(f.shape[1], f.device)
             hr_t = self.anyup(g, f, output_size=out_size)           # (B,D,*out_size)
-            acc = hr_t if acc is None else acc + hr_t
-        return self.probe(acc / T)
+            if self.ensemble:
+                # probe each timestep's upsampled features with its OWN probe, then average the
+                # T logits (pre-softmax). One probe per t makes this a real ensemble.
+                logit_t = self.probe[t](hr_t)                       # (B,C,*out_size)
+                acc = logit_t if acc is None else acc + logit_t
+            else:
+                acc = hr_t if acc is None else acc + hr_t           # accumulate features
+        if self.ensemble:
+            return acc / T                                          # mean of per-t logits
+        return self.probe(acc / T)                                  # one probe on mean features
 
 
 class AnyUpHead(nn.Module):

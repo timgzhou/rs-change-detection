@@ -62,6 +62,8 @@ HEAD_GUIDANCE = {
     "anyup": "mean",
     "anyup_t2": "temporal",
     "anyup_t1": "temporal",
+    "anyup_t2_ens": "temporal",
+    "anyup_t1_ens": "temporal",
 }
 
 # Whether the head collapses time via feats.mean(dim=1) as its first op. When True the dataset
@@ -75,6 +77,10 @@ HEAD_REDUCES_TIME = {
     "anyup": True,
     "anyup_t2": True,
     "anyup_t1": False,
+    # t2_ens shares one time-pooled feature map (T comes from the 5-D per-t RGB, so the ensemble
+    # still gets its T probes); t1_ens needs the real per-timestep features.
+    "anyup_t2_ens": True,
+    "anyup_t1_ens": False,
 }
 
 
@@ -257,12 +263,16 @@ class LPPatchToPixel(nn.Module):
 #   anyup_t1 : per-timestep features (list of T (B,D,gH,gW)); per-timestep RGB.     [guidance=temporal]
 
 class CachedAnyUp(nn.Module):
-    """anyup: cached features mean-pooled over T, single mean RGB guidance."""
+    """anyup: cached features mean-pooled over T, single mean RGB guidance.
+
+    ensemble=False (default): the T AnyUp-upsampled maps are mean-pooled, then ONE probe.
+    ensemble=True: each timestep's upsampled map gets its OWN probe and the T logits are
+    averaged pre-softmax (a temporal ensemble). anyup (single-timestep) ignores the flag."""
 
     def __init__(self, embed_dim: int, num_classes: int, patch_size: int,
-                 label_size: int = LABEL_SIZE):
+                 label_size: int = LABEL_SIZE, ensemble: bool = False):
         super().__init__()
-        self.up = AnyUpUpsampleProbe(num_classes)
+        self.up = AnyUpUpsampleProbe(num_classes, ensemble=ensemble)
         self.label_size = label_size
 
     def _feats_2d(self, feats):                          # (B,T,gH,gW,D) -> (B,D,gH,gW)
@@ -290,16 +300,23 @@ class CachedAnyUpT1(CachedAnyUp):
 
 
 def build_cached_head(name: str, embed_dim: int, num_classes: int, patch_size: int) -> nn.Module:
+    # (class, extra kwargs). The _ens variants reuse the same wrapper but give each timestep its
+    # own probe and average the per-timestep logits instead of mean-pooling features (see
+    # AnyUpUpsampleProbe.ensemble). t1_ens = per-timestep features; t2_ens = shared time-pooled
+    # features -- both with per-timestep hr probes.
     HEADS = {
-        "lp_pa2pa_bu": LPPatchToPatchBU,
-        "lp_pa2px": LPPatchToPixel,
-        "anyup": CachedAnyUp,
-        "anyup_t2": CachedAnyUpT2,
-        "anyup_t1": CachedAnyUpT1,
+        "lp_pa2pa_bu": (LPPatchToPatchBU, {}),
+        "lp_pa2px": (LPPatchToPixel, {}),
+        "anyup": (CachedAnyUp, {}),
+        "anyup_t2": (CachedAnyUpT2, {}),
+        "anyup_t1": (CachedAnyUpT1, {}),
+        "anyup_t2_ens": (CachedAnyUpT2, {"ensemble": True}),
+        "anyup_t1_ens": (CachedAnyUpT1, {"ensemble": True}),
     }
     if name not in HEADS:
         raise ValueError(f"head_mode={name!r} not in {list(HEADS)} (cached-feature heads)")
-    return HEADS[name](embed_dim, num_classes, patch_size)
+    cls, kwargs = HEADS[name]
+    return cls(embed_dim, num_classes, patch_size, **kwargs)
 
 
 # ----------------------------- train / eval -----------------------------
