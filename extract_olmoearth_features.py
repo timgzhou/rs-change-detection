@@ -148,16 +148,23 @@ def _human(nbytes: int) -> str:
 
 def extract_split(encoder, split: str, out_dir: Path, args, device) -> int:
     """Write one .pt per sample: features/<cfg>/pastis_r_<split>/<idx>.pt -> (T,gH,gW,D) fp16.
-    Idempotent: if the folder already has the expected file count, skip the split."""
+    Idempotent: if the folder already has the expected file count, skip the split.
+
+    args.limit (>0) caps the split to its first N samples (indices 0..N-1). The loader has
+    shuffle=False, so those are the SAME samples/files the full run writes -- a limited run is a
+    strict prefix of the full one, letting a later unlimited run just fill in the rest. Handy for
+    getting the first few test images extracted for visualization before the full job finishes."""
     split_dir = out_dir / f"pastis_r_{split}"
     split_dir.mkdir(parents=True, exist_ok=True)
 
     loader = make_loader(split, args.data_splits, args.modalities,
                          args.batch_size, args.num_workers)
-    n_samples = len(loader.dataset)
+    full_n = len(loader.dataset)
+    n_samples = min(args.limit, full_n) if args.limit and args.limit > 0 else full_n
     existing = len(list(split_dir.glob("*.pt")))
-    if existing == n_samples:
-        print(f"[{split}] {n_samples} files already present, skipping.")
+    if existing >= n_samples:
+        # >= (not ==) so a limited run is a no-op once the full extraction already covers it.
+        print(f"[{split}] {existing} files already present (need {n_samples}), skipping.")
         return n_samples
 
     idx = 0
@@ -167,6 +174,8 @@ def extract_split(encoder, split: str, out_dir: Path, args, device) -> int:
             feats = encode_batch(encoder, masked, args.patch_size, args.tile_size, device)
         feats = feats.half().cpu()                       # (B, T, gH, gW, D)
         for b in range(feats.shape[0]):
+            if idx >= n_samples:                         # hit the limit mid-batch: stop writing
+                return n_samples
             torch.save(feats[b].clone(), split_dir / f"{idx}.pt")
             idx += 1
     assert idx == n_samples, f"wrote {idx} != {n_samples} for {split}"
@@ -187,6 +196,9 @@ def main() -> None:
                    help="comma-separated subset of train,valid,test")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--limit", type=int, default=0,
+                   help="if >0, only extract the first N samples per split (a prefix of the full "
+                        "run; e.g. --splits test --limit 4 for quick visualization)")
     args = p.parse_args()
 
     args.modalities = [m for m in args.modalities.split(",") if m]

@@ -30,13 +30,14 @@ MODEL_SIZE="${MODEL_SIZE:-base}"
 MODALITIES="${MODALITIES:-sentinel2_l2a}"
 PATCH_SIZE="${PATCH_SIZE:-1}"
 TILE_SIZE="${TILE_SIZE:-1}"
+BATCH_SIZE="${BATCH_SIZE:-16}"   # lower for heavy configs (e.g. ps1 tile64) that OOM the GPU
 # Write features to project space (scratch is near quota); override with OUT_ROOT.
 OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
 
 cd "$SLURM_SUBMIT_DIR"
 source env_olmo.sh
 
-ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --out_root $OUT_ROOT"
+ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --batch_size $BATCH_SIZE --out_root $OUT_ROOT"
 TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE}"
 
 # Email at start.
