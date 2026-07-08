@@ -19,8 +19,14 @@ if [ ${#FEATURES[@]} -eq 0 ]; then
         # oe_base_s2_ps2_tile32
         # oe_base_s2_ps4_tile64
         # oe_base_s2s1_ps4_tile64
+        oe_base_s2_ps1_tile32
+        oe_base_s2_ps1_tile64
+        oe_base_s2_ps2_tile2
         oe_base_s2_ps2_tile8
+        oe_base_s2_ps2_tile64
+        oe_base_s2_ps4_tile4
         oe_base_s2_ps4_tile8
+        oe_base_s2_ps4_tile32
     )
 fi
 

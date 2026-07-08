@@ -201,6 +201,23 @@ def save_epoch_viz(model, proj_head, sample, GH, GW, device, out_path, epoch) ->
     print(f"  saved viz {out_path}")
 
 
+def _warmup_cosine(optimizer, total_steps, warmup_frac, lr, lr_min):
+    """LambdaLR: linear warmup 0->1 over the first warmup_frac of steps, then cosine decay to
+    lr_min/lr. Stepped per batch. total_steps = epochs * batches_per_epoch."""
+    import math
+    warmup_steps = max(1, int(total_steps * warmup_frac))
+    floor = lr_min / lr if lr > 0 else 0.0
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps                       # linear 0 -> 1
+        # cosine 1 -> floor over the remaining steps
+        prog = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(prog, 1.0)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 @torch.no_grad()
 def _bilinear_baseline(loader, criterion, GH, GW, device, n_batches=20) -> float:
     """Mean HR Cosine_MSE loss when the LR feats are upsampled by plain bilinear interpolation
@@ -235,6 +252,10 @@ def main():
     p.add_argument("--lr", type=float, default=1e-3,
                    help="AnyUp uses 2e-4, but our loss surface is flatter (LR/HR feats start "
                         "already aligned), so a higher LR converges faster")
+    p.add_argument("--lr_min", type=float, default=1e-6,
+                   help="floor the cosine decay reaches at the end of training")
+    p.add_argument("--warmup_frac", type=float, default=0.05,
+                   help="fraction of total steps for linear LR warmup before cosine decay")
     p.add_argument("--baseline_batches", type=int, default=20,
                    help="batches to average the bilinear baseline over")
     p.add_argument("--qk_dim", type=int, default=128)
@@ -308,6 +329,16 @@ def main():
     criterion = Cosine_MSE()
     opt = torch.optim.AdamW(params, lr=args.lr)
 
+    # Warmup + cosine LR schedule, stepped PER BATCH. total_steps drives the cosine period; the
+    # first warmup_frac of steps ramp linearly 0 -> lr, then cosine-decay lr -> lr_min. Both the
+    # mAnyUp optimizer and the baseline's share the SAME schedule so the attribution comparison
+    # (mAnyUp vs bilinear+linear head) stays fair -- otherwise one would train under a decaying LR
+    # and the other a constant one.
+    total_steps = args.epochs * len(loader)
+    def make_sched(o):
+        return _warmup_cosine(o, total_steps, args.warmup_frac, args.lr, args.lr_min)
+    sched = make_sched(opt)
+
     # ---- baseline 1: NAIVE bilinear upsample of LR feats (no guidance, no learning). One-shot.
     baseline = _bilinear_baseline(loader, criterion, GH, GW, device, n_batches=args.baseline_batches)
     print(f"[baseline] bilinear (no learning) HR loss = {baseline:.4f}")
@@ -318,6 +349,7 @@ def main():
     # is mostly the linear map, not the guidance. Trained in lockstep below with its own optimizer.
     lin_head = nn.Conv2d(D, D, kernel_size=1).to(device) if args.linear_baseline else None
     lin_opt = torch.optim.AdamW(lin_head.parameters(), lr=args.lr) if lin_head else None
+    lin_sched = make_sched(lin_opt) if lin_opt else None
     if lin_head:
         print(f"[baseline] co-training bilinear+linear head ({sum(p.numel() for p in lin_head.parameters())} params)")
 
@@ -343,6 +375,7 @@ def main():
             opt.zero_grad()
             loss.backward()
             opt.step()
+            sched.step()                                       # warmup+cosine, per batch
 
             # Co-train the bilinear+linear baseline on the same batch (independent optimizer, no
             # guidance, no learned upsampling -- just a linear map on bilinearly-upsampled LR).
@@ -354,12 +387,13 @@ def main():
                 lin_opt.zero_grad()
                 loss_lin.backward()
                 lin_opt.step()
+                lin_sched.step()                               # same schedule -> fair comparison
 
             running["hr"] += loss_hr.item()
             running["down"] += float(loss_down)
             running["lin"] += float(loss_lin)
             if bi % 50 == 0:
-                print(f"epoch {epoch} batch {bi}/{len(loader)}  "
+                print(f"epoch {epoch} batch {bi}/{len(loader)}  lr={sched.get_last_lr()[0]:.2e}  "
                       f"hr={loss_hr.item():.4f} down={float(loss_down):.4f}"
                       + (f" lin={float(loss_lin):.4f}" if lin_head is not None else ""))
             if args.sanity:
