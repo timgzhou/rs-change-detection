@@ -20,6 +20,7 @@
 #   sbatch extract_olmoearth_features.sh                                   # defaults: ps1 tile1, s2
 #   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
 #   sbatch --export=ALL,MODALITIES=sentinel2_l2a,sentinel1,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
+#   sbatch --export=ALL,MODALITIES=sentinel2_l2a,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1   # silence tqdm progress bars in the batch log
@@ -29,11 +30,13 @@ MODEL_SIZE="${MODEL_SIZE:-base}"
 MODALITIES="${MODALITIES:-sentinel2_l2a}"
 PATCH_SIZE="${PATCH_SIZE:-1}"
 TILE_SIZE="${TILE_SIZE:-1}"
+# Write features to project space (scratch is near quota); override with OUT_ROOT.
+OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
 
 cd "$SLURM_SUBMIT_DIR"
 source env_olmo.sh
 
-ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE"
+ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --out_root $OUT_ROOT"
 TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE}"
 
 # Email at start.

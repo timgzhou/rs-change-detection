@@ -24,3 +24,10 @@ timestamp,features,head_mode,epochs,lr,batch_size,seed,test_miou,test_overall_ac
 2026-07-06T07:02:57,oe_base_s2s1_ps4_tile64,anyup_t2_ens,32,0.01,4,0,0.51,0.81,246.68
 2026-07-06T07:06:53,oe_base_s2_ps4_tile64,anyup_t2_ens,32,0.01,4,0,0.53,0.81,252.06
 2026-07-06T08:43:52,oe_base_s2_ps2_tile32,anyup_t1_ens,32,0.01,4,0,0.60,0.83,718.95
+2026-07-07T14:47:49,oe_base_s2_ps4_tile8,lp_pa2pa_bu,32,0.01,32,0,0.48,0.78,6.31
+2026-07-07T14:52:01,oe_base_s2_ps4_tile8,lp_pa2px,32,0.01,32,0,0.48,0.79,5.88
+2026-07-07T14:53:26,oe_base_s2_ps2_tile8,lp_pa2pa_bu,32,0.01,32,0,0.51,0.80,11.21
+2026-07-07T15:04:59,oe_base_s2_ps2_tile8,lp_pa2px,32,0.01,32,0,0.51,0.80,11.21
+2026-07-07T15:11:51,oe_base_s2_ps4_tile8,anyup,32,0.01,4,0,0.51,0.80,30.94
+2026-07-07T15:56:22,oe_base_s2_ps2_tile8,anyup,32,0.01,4,0,0.53,0.81,80.82
+2026-07-07T17:27:54,oe_base_s2_ps4_tile8,anyup_t2,32,0.01,4,0,0.52,0.80,249.79

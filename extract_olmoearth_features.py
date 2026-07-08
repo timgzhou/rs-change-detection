@@ -24,7 +24,7 @@ stitch the token grids back together.
 
 Runs in the OlmoEarth venv (torch 2.7.x), via salloc:
     source env_olmo.sh
-    python -u extract_olmoearth_features.py --model_size base --patch_size 4 --tile_size 64
+    python -u extract_olmoearth_features.py --model_size base --patch_size 1 --tile_size 32 --out_root ~/projects/aip-gpleiss/timz/features
 """
 import os
 import sys
