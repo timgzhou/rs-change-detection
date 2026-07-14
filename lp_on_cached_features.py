@@ -14,7 +14,7 @@ variants would additionally load cached RGB guidance and are out of scope for v1
 
 Runs in the OlmoEarth venv (for segmentation_metrics); via salloc or even CPU:
     source env_olmo.sh
-    python -u lp_on_cached_features.py --features oe_base_s2s1_ps4_tile64 --head_mode lp_pa2px
+    python -u lp_on_cached_features.py --features oe_base_s2_ps4_tile64 --head_mode lp_pa2px
 """
 import os
 import sys

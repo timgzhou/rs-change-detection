@@ -24,7 +24,7 @@
 #   NUM_WORKERS       DataLoader workers (default 0). >0 ships batches via /dev/shm, which is
 #                     tightly capped on Compute Canada and overflows to "Bus error" for the
 #                     large 64x64-grid feature sets; 0 loads in-process and avoids shm.
-#   MAX_RAM_GB        cap for preloading features into RAM (default 32). The big grids
+#   MAX_RAM_GB        cap for preloading features into RAM (default 48). The big grids
 #                     (ps1_tile8) can OOM; lower this to force disk streaming instead.
 
 EMAIL="tiange.zhou@outlook.com"
@@ -39,12 +39,13 @@ fi
 BATCH_SIZE="${BATCH_SIZE:-32}"
 ANYUP_BATCH_SIZE="${ANYUP_BATCH_SIZE:-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
-MAX_RAM_GB="${MAX_RAM_GB:-32}"
+MAX_RAM_GB="${MAX_RAM_GB:-48}"
 
 cd "$SLURM_SUBMIT_DIR"
 source env_olmo.sh
 
-HEADS=(lp_pa2pa_bu lp_pa2px anyup anyup_t2 anyup_t2_ens anyup_t1 anyup_t1_ens)
+HEADS=(lp_pa2pa_bu lp_pa2px)
+# HEADS=(lp_pa2px_ens)
 
 LOG="logs/oe_lp_${SLURM_JOB_ID}.out"
 

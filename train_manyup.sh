@@ -31,7 +31,7 @@ export TQDM_DISABLE=1
 
 # Configurable knobs (env vars from --export override these defaults).
 LR_CFG="${LR_CFG:-oe_base_s2_ps4_tile4}"
-HR_CFG="${HR_CFG:-oe_base_s2_ps1_tile64}"
+HR_CFG="${HR_CFG:-oe_base_s2_ps1_tile8}"
 EPOCHS="${EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-1e-3}"
