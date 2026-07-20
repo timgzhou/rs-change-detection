@@ -48,10 +48,6 @@ ARGS="--lr_cfg $LR_CFG --hr_cfg $HR_CFG --epochs $EPOCHS --batch_size $BATCH_SIZ
 --lr $LR --down_reg $DOWN_REG --stage_to_tmpdir --out_dir $OUT_DIR $EXTRA"
 TAG="${LR_CFG} -> ${HR_CFG}"
 
-# Email at start.
-echo "train_manyup.py $ARGS" \
-    | mail -s "[START job $SLURM_JOB_ID] mAnyUp $TAG" "$EMAIL"
-
 LOG="logs/manyup_${SLURM_JOB_ID}.out"
 python -u train_manyup.py $ARGS
 STATUS=$?
