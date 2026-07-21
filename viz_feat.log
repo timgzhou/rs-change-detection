@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/scratch/timz/rs-change-detection/viz_urbansar_features.py", line 12, in <module>
+    from olmoearth_pretrain.evals.datasets.utils import eval_collate_fn
+  File "/scratch/timz/rs-change-detection/env_olmo/lib/python3.12/site-packages/olmoearth_pretrain/evals/datasets/__init__.py", line 15, in <module>
+    from .pastis_dataset import PASTISRDataset
+  File "/scratch/timz/rs-change-detection/env_olmo/lib/python3.12/site-packages/olmoearth_pretrain/evals/datasets/pastis_dataset.py", line 14, in <module>
+    from olmoearth_pretrain.data.dataset import OlmoEarthSample
+  File "/scratch/timz/rs-change-detection/env_olmo/lib/python3.12/site-packages/olmoearth_pretrain/data/dataset.py", line 17, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
