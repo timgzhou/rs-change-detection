@@ -1,0 +1,17 @@
+# UrbanSARFloods pipeline (run from repo root, inside the OlmoEarth venv: `source env_olmo.sh`)
+# HF rate-limits anonymous downloads -> set a token first: `hf auth login` (or export HF_TOKEN=...)
+
+# 1. Download train/val tar (~38GB) + inspect. Skip the 414GB raw SLC.
+HF_HUB_DISABLE_XET=1 hf download S1Floodbenchmark/UrbanSARFloods_v1 urban_sar_floods.tar.gz --repo-type dataset --local-dir data
+
+# 2. Extract (-> data/urban_sar_floods/ with 01_NF 02_FO 03_FU + Train/Valid_dataset.txt)
+tar xzf data/urban_sar_floods.tar.gz -C data
+
+# 3. Tile 512->64 sub-tiles, flood-only, drop NaN-nodata tiles (-> data/urbansarfloods_tiles/)
+python -u prep_urbansarfloods_tiles.py --splits train,valid
+
+# 4. Extract frozen OlmoEarth features (patch_size=4, input_res=20, keeps T=2 pre/post)
+python -u extract_urbansarfloods_features.py --splits train,valid
+
+# 5. Linear-probe: concat pre+post features -> per-pixel head; reports val(=test) mIoU(NF,FO)
+python -u lp_urbansarfloods.py --features usf_base_s1_ps4_res20
