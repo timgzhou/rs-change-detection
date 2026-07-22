@@ -40,8 +40,6 @@ import torch
 from tqdm import tqdm
 
 IMAGE_SIZE = 512
-TILE = 64
-N_SIDE = IMAGE_SIZE // TILE          # 8
 _DATE_RE = re.compile(r"(\d{8})")
 
 
@@ -62,7 +60,11 @@ def _read_gt_paths(root: Path, split: str) -> list[Path]:
         return [_resolve(root, line) for line in f if line.strip()]
 
 
-def prep_split(root: Path, split: str, out_root: Path, flood_only: bool, limit: int) -> None:
+def prep_split(root: Path, split: str, out_root: Path, tile_size: int,
+               flood_only: bool, limit: int) -> None:
+    if IMAGE_SIZE % tile_size != 0:
+        raise ValueError(f"tile_size {tile_size} must divide {IMAGE_SIZE}")
+    n_side = IMAGE_SIZE // tile_size
     gt_paths = _read_gt_paths(root, split)
     if limit > 0:
         gt_paths = gt_paths[:limit]
@@ -83,15 +85,15 @@ def prep_split(root: Path, split: str, out_root: Path, flood_only: bool, limit: 
         m = _DATE_RE.search(sar_path.name)
         date = m.group(1) if m else "00000000"
 
-        for r in range(N_SIDE):
-            for c in range(N_SIDE):
+        for r in range(n_side):
+            for c in range(n_side):
                 seen += 1
-                y0, x0 = r * TILE, c * TILE
-                lab = label[y0:y0 + TILE, x0:x0 + TILE]
+                y0, x0 = r * tile_size, c * tile_size
+                lab = label[y0:y0 + tile_size, x0:x0 + tile_size]
                 if flood_only and not np.any((lab == 1) | (lab == 2)):
                     skipped_nofloor += 1
                     continue
-                sar_crop = sar[:, y0:y0 + TILE, x0:x0 + TILE]
+                sar_crop = sar[:, y0:y0 + tile_size, x0:x0 + tile_size]
                 # DROP any sub-tile with a non-finite SAR pixel. Source scenes have NaN
                 # nodata along the SAR swath edge (~diagonal); those pixels propagate NaN
                 # through the encoder. We drop the whole tile (no imputation) so the cache
@@ -101,8 +103,8 @@ def prep_split(root: Path, split: str, out_root: Path, flood_only: bool, limit: 
                     continue
                 torch.save(
                     {
-                        "sar": torch.from_numpy(sar_crop).half(),      # (8,64,64) fp16
-                        "label": torch.from_numpy(lab).to(torch.int8),  # (64,64)
+                        "sar": torch.from_numpy(sar_crop).half(),      # (8,tile,tile) fp16
+                        "label": torch.from_numpy(lab).to(torch.int8),  # (tile,tile)
                         "src": sar_path.name,
                         "pos": (r, c),
                         "date": date,
@@ -117,9 +119,12 @@ def prep_split(root: Path, split: str, out_root: Path, flood_only: bool, limit: 
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Tile UrbanSARFloods 512->64 for fast training.")
+    p = argparse.ArgumentParser(description="Tile UrbanSARFloods 512 -> tile_size for fast training.")
     p.add_argument("--root", default="data/urban_sar_floods")
-    p.add_argument("--out_root", default="data/urbansarfloods_tiles")
+    p.add_argument("--out_root", default="data/urbansarfloods_tiles",
+                   help="tiles go under <out_root>_t<tile_size>/<split>/ so tile sizes don't collide")
+    p.add_argument("--tile_size", type=int, default=64,
+                   help="sub-tile size; must divide 512 (e.g. 64, 32, 128)")
     p.add_argument("--splits", default="train,valid")
     p.add_argument("--flood_only", default="true",
                    help="keep only sub-tiles containing a flood pixel (class 1/2). true/false")
@@ -128,9 +133,11 @@ def main() -> None:
 
     flood_only = str(args.flood_only).strip().lower() in ("true", "1", "yes")
     root = Path(args.root)
-    out_root = Path(args.out_root)
+    # Encode tile size in the output dir so t64 and t32 coexist.
+    out_root = Path(f"{args.out_root}_t{args.tile_size}")
+    print(f"Tiling 512 -> {args.tile_size} into {out_root}/ (flood_only={flood_only})")
     for split in [s for s in args.splits.split(",") if s]:
-        prep_split(root, split, out_root, flood_only, args.limit)
+        prep_split(root, split, out_root, args.tile_size, flood_only, args.limit)
 
 
 if __name__ == "__main__":

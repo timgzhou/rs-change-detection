@@ -95,10 +95,14 @@ def extract_split(encoder, split, tiles_dir, out_dir, args, device, normalizer) 
         ds, batch_size=args.batch_size, num_workers=args.num_workers,
         shuffle=False, collate_fn=_collate)
     n_sanitized = 0
+    # The encoder uses bf16 autocast on GPU (it casts activations to bf16 while weights stay
+    # fp32; without autocast the conv raises a dtype mismatch). On CPU we must NOT use bf16:
+    # FlexiViT's patch-resize uses bicubic+antialias interpolation, which has no bf16 CPU
+    # kernel ("compute_index_ranges_weights not implemented for BFloat16"). So bf16 only on cuda.
+    use_amp = device.type == "cuda"
     for masked, label, idxs in tqdm(loader, desc=f"extract {split}"):
-        # The encoder requires bf16 autocast (it casts activations to bf16 while weights stay
-        # fp32; without autocast the conv raises a dtype mismatch).
-        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                              enabled=use_amp):
             tam = encoder(to_device(masked, device), patch_size=args.patch_size,
                           input_res=INPUT_RES, fast_pass=True)["tokens_and_masks"]
             T = next(getattr(tam, m).shape[3] for m in tam.modalities)
@@ -125,6 +129,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Cache OlmoEarth features for tiled UrbanSARFloods.")
     p.add_argument("--model_size", default="base", choices=list(MODEL_SIZE_TO_ID))
     p.add_argument("--patch_size", type=int, default=4)
+    p.add_argument("--tile_size", type=int, default=64,
+                   help="sub-tile size used at prep time; reads tiles from <tiles_root>_t<tile_size>")
     p.add_argument("--tiles_root", default="data/urbansarfloods_tiles")
     p.add_argument("--out_root", default="features")
     p.add_argument("--splits", default="train,valid")
@@ -132,11 +138,16 @@ def main() -> None:
     p.add_argument("--num_workers", type=int, default=4)
     args = p.parse_args()
 
-    name = f"usf_{args.model_size}_s1_ps{args.patch_size}_res{INPUT_RES}"
+    if args.tile_size % args.patch_size != 0:
+        raise ValueError(f"tile_size {args.tile_size} must be divisible by patch_size {args.patch_size}")
+    grid = args.tile_size // args.patch_size
+    # Feature folder + tiles dir both encode tile_size so ps/tile variants never collide.
+    name = f"usf_{args.model_size}_s1_ps{args.patch_size}_res{INPUT_RES}_t{args.tile_size}"
     out_dir = Path(args.out_root) / name
     out_dir.mkdir(parents=True, exist_ok=True)
-    tiles_dir = Path(args.tiles_root)
-    print(f"Extraction config: {name} (patch_size={args.patch_size}, input_res={INPUT_RES})")
+    tiles_dir = Path(f"{args.tiles_root}_t{args.tile_size}")
+    print(f"Extraction config: {name} (patch_size={args.patch_size}, tile_size={args.tile_size}, "
+          f"input_res={INPUT_RES}, grid={grid}) reading {tiles_dir}/")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Local weights avoid the HF download/rate-limit; falls back to ModelID if absent.
@@ -150,7 +161,7 @@ def main() -> None:
         prm.requires_grad = False
     normalizer = Normalizer(Strategy.COMPUTED)
 
-    counts, T_dim, embed_dim, grid = {}, None, None, 64 // args.patch_size
+    counts, T_dim, embed_dim = {}, None, None
     for split in [s for s in args.splits.split(",") if s]:
         counts[split] = extract_split(encoder, split, tiles_dir, out_dir, args, device, normalizer)
         if embed_dim is None and counts[split] > 0:
@@ -161,8 +172,9 @@ def main() -> None:
         "dataset": "urbansarfloods", "model_size": args.model_size,
         "patch_size": args.patch_size, "input_res": INPUT_RES, "modalities": ["sentinel1"],
         "pooling": str(POOLING_TYPE), "timesteps": T_dim, "embed_dim": embed_dim,
-        "grid": grid, "dtype": "float16", "counts": counts,
-        "feature_shape": [T_dim, grid, grid, embed_dim], "num_classes": 3, "label_size": 64,
+        "grid": grid, "tile_size": args.tile_size, "dtype": "float16", "counts": counts,
+        "feature_shape": [T_dim, grid, grid, embed_dim], "num_classes": 3,
+        "label_size": args.tile_size,
     }
     with open(out_dir / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
