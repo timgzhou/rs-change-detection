@@ -14,6 +14,9 @@ python -u prep_urbansarfloods_tiles.py --splits train,valid --tile_size 64
 # 4. Extract frozen OlmoEarth features (patch_size=4, input_res=20, keeps T=2 pre/post).
 #    --tile_size must match step 3; feature folder -> features/usf_base_s1_ps4_res20_t64/
 python -u extract_urbansarfloods_features.py --splits train,valid --tile_size 64
+python -u extract_urbansarfloods_features.py --splits train,valid --tile_size 32 --patch_size 2
 
 # 5. Linear-probe: concat pre+post features -> per-pixel head; reports val(=test) mIoU(NF,FO)
 python -u lp_urbansarfloods.py --features usf_base_s1_ps4_res20_t64 --weighted_ce
+python -u lp_urbansarfloods.py --features usf_base_s1_ps2_res20_t32 --weighted_ce
+

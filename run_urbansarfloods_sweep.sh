@@ -6,6 +6,9 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --output=logs/usf_lp_sweep_%j.out
+#SBATCH --mail-user=tiange.zhou@outlook.com
+#SBATCH --mail-type=ALL
+
 #
 # UrbanSARFloods LP sweep over (tile_size, patch_size) x head.
 # Assumes the dataset is already downloaded+extracted (data/urban_sar_floods/).
@@ -19,6 +22,7 @@
 #
 #   sbatch run_urbansarfloods_sweep.sh          # batch (recommended)
 #   bash   run_urbansarfloods_sweep.sh          # or interactively inside a GPU salloc
+
 set -e
 
 cd "${SLURM_SUBMIT_DIR:-.}"      # SLURM starts in $HOME; no-op when run interactively
@@ -28,7 +32,7 @@ source env_olmo.sh
 CSV=results/urbansarfloods_lp.csv
 
 # (tile_size, space-separated patch sizes)
-declare -A PATCHES=( [16]="2 4" [32]="4 8" [64]="4 8" )
+declare -A PATCHES=( [16]="2 4" [32]="2 4 8" [64]="4 8" )
 
 # 1. Tile once per tile size (writes data/urbansarfloods_tiles_t<tile>/)
 for TILE in 16 32 64; do

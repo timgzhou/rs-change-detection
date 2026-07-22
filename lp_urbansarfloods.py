@@ -36,12 +36,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from tqdm import tqdm
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from olmoearth_pretrain.evals.metrics import segmentation_metrics, _build_confusion_matrix
 
-SCHEDULER_FACTOR, SCHEDULER_PATIENCE, SCHEDULER_MIN_LR, SCHEDULER_COOLDOWN = 0.2, 2, 1e-6, 0
+SCHEDULER_MIN_LR = 1e-6         # cosine annealing floor (eta_min)
 NUM_CLASSES = 3            # 0 non-flood, 1 flooded-open, 2 flooded-urban
 IGNORE_LABEL = -1
 LABEL_SIZE = 64            # default; overridden per-run from meta.json (== tile_size)
@@ -298,9 +298,9 @@ def main() -> None:
 
     head = build_head(args.head, embed_dim, NUM_CLASSES, patch_size, label_size).to(device)
     opt = torch.optim.AdamW(head.parameters(), lr=args.lr)
-    sched = ReduceLROnPlateau(opt, mode="max", factor=SCHEDULER_FACTOR,
-                              patience=SCHEDULER_PATIENCE, min_lr=SCHEDULER_MIN_LR,
-                              cooldown=SCHEDULER_COOLDOWN)
+    # Cosine annealing over the full run: lr goes args.lr -> SCHEDULER_MIN_LR by the last epoch.
+    # Schedule-based (steps once per epoch on the epoch index), so no metric/plateau coupling.
+    sched = CosineAnnealingLR(opt, T_max=args.epochs, eta_min=SCHEDULER_MIN_LR)
 
     weight = None
     if args.weighted_ce:
@@ -317,9 +317,9 @@ def main() -> None:
     loss_fn = nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL, weight=weight)
 
     # val IS the test set here (no separate val for a hyperparameter-free LP). To avoid
-    # selecting on test, we do NOT keep the best epoch: we train a fixed number of epochs,
-    # step the scheduler on TRAIN loss, and report the FINAL epoch's val=test mIoU. The
-    # per-epoch val prints are just progress; the headline is the last line.
+    # selecting on test, we do NOT keep the best epoch: we train a fixed number of epochs
+    # (lr cosine-annealed independently of any metric) and report the FINAL epoch's val=test
+    # mIoU. The per-epoch val prints are just progress; the headline is the last line.
     final = None
     checked_finite = False
     for epoch in range(args.epochs):
@@ -337,7 +337,7 @@ def main() -> None:
             opt.step()
             losses.append(loss.item())
         train_loss = sum(losses) / max(len(losses), 1)
-        sched.step(train_loss)                            # schedule on TRAIN loss, not test
+        sched.step()                                      # cosine anneal by epoch index
         res, headline, fu, stats = evaluate(head, val_loader, device)
         final = (headline, fu, res.metrics, stats)
         print(f"epoch {epoch+1}/{args.epochs} | train_loss {train_loss:.4f} | "
