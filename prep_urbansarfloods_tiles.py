@@ -61,14 +61,22 @@ def _read_gt_paths(root: Path, split: str) -> list[Path]:
 
 
 def prep_split(root: Path, split: str, out_root: Path, tile_size: int,
-               flood_only: bool, limit: int) -> None:
+               flood_only: bool, limit: int, overwrite: bool = False) -> None:
     if IMAGE_SIZE % tile_size != 0:
         raise ValueError(f"tile_size {tile_size} must divide {IMAGE_SIZE}")
     n_side = IMAGE_SIZE // tile_size
+    out_dir = out_root / split
+    # Skip if already tiled: prep drops tiles (no-flood / NaN), so the count isn't predictable
+    # up front -- we treat "folder has >=1 .pt" as done. Re-tiling is idempotent but wasteful
+    # (re-reads every source GeoTIFF). Pass --overwrite to force.
+    existing = len(list(out_dir.glob("*.pt"))) if out_dir.exists() else 0
+    if existing and not overwrite:
+        print(f"[{split}] {existing} tiles already present in {out_dir}; skipping "
+              f"(use --overwrite to re-tile).")
+        return
     gt_paths = _read_gt_paths(root, split)
     if limit > 0:
         gt_paths = gt_paths[:limit]
-    out_dir = out_root / split
     out_dir.mkdir(parents=True, exist_ok=True)
 
     idx = 0
@@ -129,6 +137,8 @@ def main() -> None:
     p.add_argument("--flood_only", default="true",
                    help="keep only sub-tiles containing a flood pixel (class 1/2). true/false")
     p.add_argument("--limit", type=int, default=0, help="cap source images per split (debug)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="re-tile even if the output split folder already has tiles")
     args = p.parse_args()
 
     flood_only = str(args.flood_only).strip().lower() in ("true", "1", "yes")
@@ -137,7 +147,7 @@ def main() -> None:
     out_root = Path(f"{args.out_root}_t{args.tile_size}")
     print(f"Tiling 512 -> {args.tile_size} into {out_root}/ (flood_only={flood_only})")
     for split in [s for s in args.splits.split(",") if s]:
-        prep_split(root, split, out_root, args.tile_size, flood_only, args.limit)
+        prep_split(root, split, out_root, args.tile_size, flood_only, args.limit, args.overwrite)
 
 
 if __name__ == "__main__":

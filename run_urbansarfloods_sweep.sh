@@ -56,3 +56,5 @@ for TILE in 16 32 64; do
 done
 
 echo "=== DONE. Results: $CSV ; visualizations: viz/ ==="
+
+# sbatch run_urbansarfloods_sweep.sh
